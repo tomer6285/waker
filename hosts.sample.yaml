@@ -1,0 +1,47 @@
+version: 1
+defaults:
+  broadcast: 127.0.0.1
+  wol_port: 9
+  timeout: 30s
+  poll_interval: 5s
+  probe_timeout: 1s
+hosts:
+  - name: desktop
+    mac: AA:BB:CC:DD:EE:FF
+    ip: 127.0.0.1
+    broadcast: 127.0.0.1
+    ssh:
+      user: tomer
+      port: 22
+    checks:
+      - type: tcp
+        port: 22
+    on_connect:
+      type: ssh
+    on_sleep:
+      type: ssh
+  - name: valheim
+    mac: 11:22:33:44:55:66
+    ip: 127.0.0.1
+    broadcast: 127.0.0.1
+    checks:
+      - type: tcp
+        port: 2456
+    on_connect:
+      type: custom
+      run: "echo '[Game Client] Launching Valheim steam://connect/127.0.0.1:2456'"
+  - name: gaming-pc
+    mac: DE:AD:BE:EF:00:01
+    ip: 127.0.0.1
+    broadcast: 127.0.0.1
+    checks:
+      - type: tcp
+        port: 21725
+    on_connect:
+      type: parsec
+      peer_id: "demo-peer-1234"
+      settings: "client_vsync=1"
+    on_sleep:
+      type: agent
+      port: 9876
+      token: "secret-token"

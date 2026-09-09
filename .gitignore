@@ -1,0 +1,40 @@
+# Binaries & build output
+bin/
+dist/
+waker
+waker-agent
+*.exe
+*.test
+*.out
+
+# Go
+*.coverprofile
+coverage.out
+coverage.html
+/vendor/
+go.work.sum
+
+# Local configs & secrets (keep hosts.sample.yaml, ignore real ones)
+hosts.yaml
+hosts.yml
+*.local.yaml
+.env
+.env.*
+*.pem
+*.key
+
+# OS & editor noise
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Node (stray package-lock.json in repo root)
+node_modules/
+
+# Logs & temp
+*.log
+/tmp/
