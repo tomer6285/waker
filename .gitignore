@@ -1,8 +1,8 @@
 # Binaries & build output
 bin/
 dist/
-waker
-waker-agent
+/waker
+/waker-agent
 *.exe
 *.test
 *.out

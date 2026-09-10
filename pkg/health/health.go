@@ -21,11 +21,37 @@ type CheckResult struct {
 	Error   string        `json:"error,omitempty"`
 }
 
+var localSubnetChecker = CheckLocalSubnet
+
+// SetLocalSubnetCheckerForTesting sets a custom subnet checker function and returns a restore function.
+func SetLocalSubnetCheckerForTesting(fn func(ipStr string) SubnetMatchResult) func() {
+	orig := localSubnetChecker
+	localSubnetChecker = fn
+	return func() { localSubnetChecker = orig }
+}
+
 // CheckHost probes the configured checks for a host and returns individual check results.
 // If any check passes, the host is considered reachable.
 func CheckHost(ctx context.Context, host *config.HostConfig, timeout time.Duration) []CheckResult {
 	if timeout <= 0 {
 		timeout = 2 * time.Second
+	}
+
+	// 1. Local Subnet Matching: Check if host IP is a local/Tailscale target and whether the
+	// current device is actually connected to that network before spending time probing.
+	if host.IP != "" && host.ShouldCheckSubnet() {
+		match := localSubnetChecker(host.IP)
+		if match.IsLocalTarget && !match.IsMatched {
+			return []CheckResult{
+				{
+					Type:    "subnet",
+					Target:  host.IP,
+					Success: false,
+					Latency: 0,
+					Error:   match.Reason,
+				},
+			}
+		}
 	}
 
 	checks := host.Checks

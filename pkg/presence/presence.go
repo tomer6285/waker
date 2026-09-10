@@ -13,10 +13,11 @@ import (
 type Status string
 
 const (
-	StatusOnline  Status = "online"
-	StatusOffline Status = "offline"
-	StatusWaking  Status = "waking"
-	StatusUnknown Status = "unknown"
+	StatusOnline      Status = "online"
+	StatusOffline     Status = "offline"
+	StatusUnreachable Status = "unreachable"
+	StatusWaking      Status = "waking"
+	StatusUnknown     Status = "unknown"
 )
 
 type HostStatusInfo struct {
@@ -166,6 +167,8 @@ func (p *Poller) probeHost(ctx context.Context, host *config.HostConfig, timeout
 	status := StatusOffline
 	if reachable {
 		status = StatusOnline
+	} else if health.IsSubnetUnreachable(res) {
+		status = StatusUnreachable
 	} else if isWaking {
 		// If wake was sent within host timeout (or default 120s), still waking
 		wakeLimit := p.cfg.Defaults.Timeout

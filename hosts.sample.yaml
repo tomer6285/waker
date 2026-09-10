@@ -10,6 +10,7 @@ hosts:
     mac: AA:BB:CC:DD:EE:FF
     ip: 127.0.0.1
     broadcast: 127.0.0.1
+    subnet_check: true # optional: set false if host is routed across subnets/VLANs
     ssh:
       user: tomer
       port: 22

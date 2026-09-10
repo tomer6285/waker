@@ -56,10 +56,11 @@ var (
 				Bold(true).
 				Foreground(lipgloss.Color("#88C0D0"))
 
-	dotOnline  = lipgloss.NewStyle().Foreground(lipgloss.Color("#A3BE8C")).Render("●")
-	dotOffline = lipgloss.NewStyle().Foreground(lipgloss.Color("#4C566A")).Render("○")
-	dotWaking  = lipgloss.NewStyle().Foreground(lipgloss.Color("#EBCB8B")).Render("◌")
-	dotUnknown = lipgloss.NewStyle().Foreground(lipgloss.Color("#616E88")).Render("?")
+	dotOnline      = lipgloss.NewStyle().Foreground(lipgloss.Color("#A3BE8C")).Render("●")
+	dotOffline     = lipgloss.NewStyle().Foreground(lipgloss.Color("#4C566A")).Render("○")
+	dotUnreachable = lipgloss.NewStyle().Foreground(lipgloss.Color("#D08770")).Render("⊘")
+	dotWaking      = lipgloss.NewStyle().Foreground(lipgloss.Color("#EBCB8B")).Render("◌")
+	dotUnknown     = lipgloss.NewStyle().Foreground(lipgloss.Color("#616E88")).Render("?")
 
 	panelStyle = lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
@@ -966,13 +967,16 @@ func (m Model) viewListAndDetail() string {
 				case presence.StatusOffline:
 					dot = dotOffline
 					statusStr = "offline"
+				case presence.StatusUnreachable:
+					dot = dotUnreachable
+					statusStr = "unreachable"
 				case presence.StatusWaking:
 					dot = m.spinner.View()
 					statusStr = "waking…"
 				}
 			}
 
-			line := fmt.Sprintf("%s%s %-16s %-16s %-10s %s",
+			line := fmt.Sprintf("%s%s %-16s %-16s %-12s %s",
 				cursorStr, dot, h.Name, h.IP, statusStr, latencyStr)
 
 			if isSelected {

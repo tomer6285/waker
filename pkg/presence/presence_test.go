@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/tomer/waker/pkg/config"
+	"github.com/tomer/waker/pkg/health"
 	"github.com/tomer/waker/pkg/store"
 )
 
@@ -62,5 +63,55 @@ func TestPresencePoller(t *testing.T) {
 	info2 := res2["test-host"]
 	if info2.Status != StatusWaking {
 		t.Errorf("expected waking, got %s", info2.Status)
+	}
+}
+
+func TestPresencePoller_SubnetUnreachable(t *testing.T) {
+	// Mock subnet checker that returns false for non-matching subnet
+	restore := health.SetLocalSubnetCheckerForTesting(func(ipStr string) health.SubnetMatchResult {
+		return health.SubnetMatchResult{
+			TargetIP:      net.ParseIP(ipStr),
+			IsLocalTarget: true,
+			IsMatched:     false,
+			Reason:        "not on local subnet (simulated)",
+		}
+	})
+	defer restore()
+
+	cfg := &config.Config{
+		Defaults: config.DefaultsConfig{
+			ProbeTimeout: 500 * time.Millisecond,
+			PollInterval: 10 * time.Second,
+		},
+		Hosts: []config.HostConfig{
+			{
+				Name: "remote-host",
+				MAC:  "AA:BB:CC:DD:EE:FF",
+				IP:   "192.168.99.50",
+				Checks: []config.CheckConfig{
+					{Type: "tcp", Port: 22},
+				},
+			},
+		},
+	}
+
+	tmpDir := t.TempDir()
+	st, err := store.LoadStore(filepath.Join(tmpDir, "state.json"))
+	if err != nil {
+		t.Fatalf("LoadStore failed: %v", err)
+	}
+
+	poller := NewPoller(cfg, st)
+	res := poller.PollOnce(context.Background())
+
+	info, ok := res["remote-host"]
+	if !ok {
+		t.Fatal("expected remote-host in poll results")
+	}
+	if info.Status != StatusUnreachable {
+		t.Errorf("expected unreachable status, got %s", info.Status)
+	}
+	if len(info.Checks) == 0 || info.Checks[0].Type != "subnet" {
+		t.Errorf("expected subnet check in info.Checks, got %+v", info.Checks)
 	}
 }

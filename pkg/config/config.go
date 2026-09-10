@@ -41,17 +41,26 @@ type SleepAction struct {
 }
 
 type HostConfig struct {
-	Name       string            `yaml:"name"`
-	MAC        string            `yaml:"mac"`
-	IP         string            `yaml:"ip,omitempty"`
-	Broadcast  string            `yaml:"broadcast,omitempty"`
-	Port       int               `yaml:"port,omitempty"`
-	Interface  string            `yaml:"interface,omitempty"`
-	Relay      *wol.RelayConfig  `yaml:"relay,omitempty"`
-	SSH        *SSHConfig        `yaml:"ssh,omitempty"`
-	Checks     []CheckConfig     `yaml:"checks,omitempty"`
-	OnConnect  *ConnectAction    `yaml:"on_connect,omitempty"`
-	OnSleep    *SleepAction      `yaml:"on_sleep,omitempty"`
+	Name        string            `yaml:"name"`
+	MAC         string            `yaml:"mac"`
+	IP          string            `yaml:"ip,omitempty"`
+	SubnetCheck *bool             `yaml:"subnet_check,omitempty"` // verify local subnet match before probing (default true)
+	Broadcast   string            `yaml:"broadcast,omitempty"`
+	Port        int               `yaml:"port,omitempty"`
+	Interface   string            `yaml:"interface,omitempty"`
+	Relay       *wol.RelayConfig  `yaml:"relay,omitempty"`
+	SSH         *SSHConfig        `yaml:"ssh,omitempty"`
+	Checks      []CheckConfig     `yaml:"checks,omitempty"`
+	OnConnect   *ConnectAction    `yaml:"on_connect,omitempty"`
+	OnSleep     *SleepAction      `yaml:"on_sleep,omitempty"`
+}
+
+// ShouldCheckSubnet returns whether local subnet matching is enabled for this host.
+func (h *HostConfig) ShouldCheckSubnet() bool {
+	if h.SubnetCheck == nil {
+		return true
+	}
+	return *h.SubnetCheck
 }
 
 type DefaultsConfig struct {
