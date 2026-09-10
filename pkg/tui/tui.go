@@ -766,19 +766,16 @@ func (m *Model) handleFormKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 
 	case "enter":
-		// If on Cancel button
 		if m.formFocus == 10 {
 			m.mode = ModeList
 			m.formErrorMsg = ""
 			return *m, nil
 		}
 
-		// If on Save button
 		if m.formFocus == 9 {
 			return m.submitForm()
 		}
 
-		// Otherwise advance to next focus item
 		m.formFocus = (m.formFocus + 1) % totalFocusable
 		m.applyFormFocus()
 		return *m, nil
@@ -1300,7 +1297,6 @@ func (m Model) viewSettings() string {
 
 	tsStatusLine := "Checking..."
 	tsIPLine := "-"
-	tsLifecycleLine := "Tailscale is currently offline"
 	if m.tsStatus != nil {
 		if !m.tsStatus.Installed {
 			tsStatusLine = lipgloss.NewStyle().Foreground(lipgloss.Color("#BF616A")).Render("Tailscale CLI not found in PATH")
@@ -1320,17 +1316,10 @@ func (m Model) viewSettings() string {
 		}
 	}
 
-	if m.tsMgr != nil && m.tsMgr.StartedByWaker() {
-		tsLifecycleLine = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#EBCB8B")).Render("Started by Waker (will disconnect when quitting)")
-	} else if m.tsStatus != nil && m.tsStatus.IsUp {
-		tsLifecycleLine = lipgloss.NewStyle().Foreground(lipgloss.Color("#A3BE8C")).Render("External session (will remain connected when quitting)")
-	}
-
 	var statusCard strings.Builder
 	lblStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#7B88A1"))
-	statusCard.WriteString(fmt.Sprintf("%-20s %s\n", lblStyle.Render("Connection:"), tsStatusLine))
-	statusCard.WriteString(fmt.Sprintf("%-20s %s\n", lblStyle.Render("Tailscale IP:"), tsIPLine))
-	statusCard.WriteString(fmt.Sprintf("%-20s %s\n\n", lblStyle.Render("Lifecycle Rule:"), tsLifecycleLine))
+	statusCard.WriteString(fmt.Sprintf("%-16s %s\n", lblStyle.Render("Status:"), tsStatusLine))
+	statusCard.WriteString(fmt.Sprintf("%-16s %s\n\n", lblStyle.Render("Tailscale IP:"), tsIPLine))
 
 	// Row 2: Manual Connect/Disconnect button
 	actionBtnText := "[ Connect Tailscale Now ]"
@@ -1352,27 +1341,7 @@ func (m Model) viewSettings() string {
 		Width(innerWidth)
 	sb.WriteString(cardBox.Render(statusCard.String()) + "\n\n")
 
-	// 4. HOW AUTO-MANAGEMENT WORKS (Informational Card)
-	rulesTitle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#81A1C1")).Render("AUTO-MANAGEMENT RULES")
-	sb.WriteString(rulesTitle + "\n\n")
-
-	var rulesBox strings.Builder
-	bullet := lipgloss.NewStyle().Foreground(lipgloss.Color("#88C0D0")).Render("•")
-	boldText := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#ECEFF4"))
-	dimText := lipgloss.NewStyle().Foreground(lipgloss.Color("#D8DEE9"))
-
-	rulesBox.WriteString(fmt.Sprintf("%s %s %s\n", bullet, boldText.Render("Launch:"), dimText.Render("If Tailscale is offline, Waker runs 'tailscale up' before probing hosts.")))
-	rulesBox.WriteString(fmt.Sprintf("%s %s %s\n", bullet, boldText.Render("Quit:  "), dimText.Render("If Tailscale was started by Waker, it runs 'tailscale down' on exit.")))
-	rulesBox.WriteString(fmt.Sprintf("%s %s %s", bullet, boldText.Render("Safety:"), dimText.Render("If Tailscale was already active on launch, Waker leaves it running on exit.")))
-
-	rulesCard := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color("#3B4252")).
-		Padding(0, 1).
-		Width(innerWidth)
-	sb.WriteString(rulesCard.Render(rulesBox.String()) + "\n\n")
-
-	// 5. Footer Hotkey Legend
+	// 4. Footer Hotkey Legend
 	sb.WriteString(headerStyle.Render("[Space / Enter] Toggle Setting  •  [↑/↓/j/k] Navigate  •  [t] Quick Tailscale  •  [s / Esc] Back"))
 
 	return panelStyle.Width(m.width - 4).Render(sb.String())
