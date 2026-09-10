@@ -144,14 +144,21 @@ func TestSettingsPageNavigationAndToggle(t *testing.T) {
 		t.Errorf("expected AutoTailscale persisted as true")
 	}
 
-	// Navigate down with 'j' to action button (focus 1)
+	// Navigate down with 'j' to setting 1: Sort Online Hosts First
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
 	m = updated.(Model)
 	if m.settingsFocus != 1 {
 		t.Errorf("expected settingsFocus 1, got %d", m.settingsFocus)
 	}
 
-	// Navigate down with 'j' to close button (focus 2)
+	// Toggle Sort Online with Space
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeySpace})
+	m = updated.(Model)
+	if !m.sortOnline {
+		t.Errorf("expected sortOnline to be true after toggle")
+	}
+
+	// Navigate down with 'j' to focus 2: Manual Tailscale Button
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
 	m = updated.(Model)
 	if m.settingsFocus != 2 {
@@ -188,18 +195,11 @@ func TestSettingsManualConnectDisconnect(t *testing.T) {
 	updated, _ = m.Update(stMsg)
 	m = updated.(Model)
 
-	// Focus 1: manual connect button
-	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
-	m = updated.(Model)
-	if m.settingsFocus != 1 {
-		t.Fatalf("expected settingsFocus 1, got %d", m.settingsFocus)
-	}
-
-	// Press Enter to connect
-	updated, cmd = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	// Press direct hotkey 't' to connect
+	updated, cmd = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'t'}})
 	m = updated.(Model)
 	if cmd == nil {
-		t.Fatalf("expected cmd for tailscaleUpCmd")
+		t.Fatalf("expected cmd for tailscaleUpCmd via 't' key")
 	}
 	resMsg := cmd()
 	if mockTS.upCalls != 1 {

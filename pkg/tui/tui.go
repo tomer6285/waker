@@ -133,8 +133,8 @@ type Model struct {
 	logs    []string
 	status  string
 
-	// Settings
-	settingsFocus int // 0: toggle auto tailscale, 1: manual connect/disconnect button, 2: back button
+	// Settings focus: 0: Auto-manage Tailscale, 1: Sort Online First, 2: Manual Tailscale Button
+	settingsFocus int
 	settingsMsg   string
 
 	// Form editing
@@ -192,19 +192,6 @@ func NewModelWithTailscale(cfg *config.Config, st *store.Store, poller *presence
 func (m *Model) initFormInputs(host *config.HostConfig) {
 	m.formErrorMsg = ""
 	m.formFocus = 0
-
-	// 8 text inputs:
-	// 0: Name (required)
-	// 1: MAC (required)
-	// 2: IP (optional)
-	// 3: Broadcast (optional)
-	// 4: Connect Primary (User / PeerID / URL / Command)
-	// 5: Connect Secondary (Port / Parsec Settings)
-	// 6: Sleep Target (Port / Token / Command)
-	// Focus 7: Connect Type Pill Selector
-	// Focus 8: Sleep Type Pill Selector
-	// Focus 9: [ Save Host ] Button
-	// Focus 10: [ Cancel ] Button
 
 	m.formInputs = make([]textinput.Model, 7)
 
@@ -350,7 +337,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case PeriodicTickMsg:
-		// Trigger async poll
 		return m, tea.Batch(
 			func() tea.Msg {
 				return StatusUpdateMsg(m.poller.PollOnce(context.Background()))
@@ -527,7 +513,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, m.wakeHostCmd(host)
 			}
 
-		case "c": // Connect (alias / shift+enter fallback)
+		case "c": // Connect
 			host := m.selectedHost()
 			if host != nil {
 				return m, m.wakeAndConnectHostCmd(host)
@@ -584,6 +570,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) handleSettingsKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	totalFocusable := 3
+
 	switch msg.String() {
 	case "s", "esc":
 		m.mode = ModeList
@@ -591,16 +579,41 @@ func (m *Model) handleSettingsKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return *m, nil
 
 	case "tab", "down", "j":
-		m.settingsFocus = (m.settingsFocus + 1) % 3
+		m.settingsFocus = (m.settingsFocus + 1) % totalFocusable
 		return *m, nil
 
 	case "shift+tab", "up", "k":
-		m.settingsFocus = (m.settingsFocus - 1 + 3) % 3
+		m.settingsFocus = (m.settingsFocus - 1 + totalFocusable) % totalFocusable
 		return *m, nil
 
+	case "t":
+		// Quick direct hotkey to toggle Tailscale
+		if m.tsStatus != nil && m.tsStatus.IsUp {
+			m.settingsMsg = "Disconnecting Tailscale..."
+			return *m, m.tailscaleDownCmd()
+		}
+		m.settingsMsg = "Connecting Tailscale..."
+		return *m, m.tailscaleUpCmd()
+
 	case " ":
-		if m.settingsFocus == 0 {
+		switch m.settingsFocus {
+		case 0:
 			return m.toggleAutoTailscale()
+		case 1:
+			m.sortOnline = !m.sortOnline
+			if m.sortOnline {
+				m.settingsMsg = "Sort online-first ENABLED"
+			} else {
+				m.settingsMsg = "Sort online-first DISABLED"
+			}
+			return *m, nil
+		case 2:
+			if m.tsStatus != nil && m.tsStatus.IsUp {
+				m.settingsMsg = "Disconnecting Tailscale..."
+				return *m, m.tailscaleDownCmd()
+			}
+			m.settingsMsg = "Connecting Tailscale..."
+			return *m, m.tailscaleUpCmd()
 		}
 
 	case "enter":
@@ -608,6 +621,14 @@ func (m *Model) handleSettingsKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case 0:
 			return m.toggleAutoTailscale()
 		case 1:
+			m.sortOnline = !m.sortOnline
+			if m.sortOnline {
+				m.settingsMsg = "Sort online-first ENABLED"
+			} else {
+				m.settingsMsg = "Sort online-first DISABLED"
+			}
+			return *m, nil
+		case 2:
 			// Toggle Tailscale Up/Down manually
 			if m.tsStatus != nil && m.tsStatus.IsUp {
 				m.settingsMsg = "Disconnecting Tailscale..."
@@ -615,10 +636,6 @@ func (m *Model) handleSettingsKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			m.settingsMsg = "Connecting Tailscale..."
 			return *m, m.tailscaleUpCmd()
-		case 2:
-			m.mode = ModeList
-			m.settingsMsg = ""
-			return *m, nil
 		}
 
 	case "ctrl+c", "q":
@@ -634,10 +651,10 @@ func (m *Model) toggleAutoTailscale() (tea.Model, tea.Cmd) {
 		m.settingsMsg = fmt.Sprintf("Save failed: %v", err)
 	} else {
 		if m.cfg.Settings.AutoTailscale {
-			m.settingsMsg = "Tailscale auto-management ENABLED (saved)"
+			m.settingsMsg = "Tailscale auto-management ENABLED (saved to hosts.yaml)"
 			m.addLog("Settings: Tailscale auto-management enabled")
 		} else {
-			m.settingsMsg = "Tailscale auto-management DISABLED (saved)"
+			m.settingsMsg = "Tailscale auto-management DISABLED (saved to hosts.yaml)"
 			m.addLog("Settings: Tailscale auto-management disabled")
 		}
 	}
@@ -767,7 +784,6 @@ func (m *Model) handleFormKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return *m, nil
 
 	default:
-		// Forward typing to focused text input
 		inputIdx := m.currentInputIndex()
 		if inputIdx >= 0 && inputIdx < len(m.formInputs) {
 			var cmd tea.Cmd
@@ -869,7 +885,6 @@ func (m *Model) parseFormHost() (config.HostConfig, error) {
 		Broadcast: bcast,
 	}
 
-	// Connect action
 	connTypes := []string{"ssh", "parsec", "mount", "game", "custom"}
 	connType := connTypes[m.formConnTypeIdx]
 	h.OnConnect = &config.ConnectAction{Type: connType}
@@ -902,7 +917,6 @@ func (m *Model) parseFormHost() (config.HostConfig, error) {
 		h.OnConnect.Run = connPrimary
 	}
 
-	// Sleep action
 	sleepTypes := []string{"ssh", "agent", "custom"}
 	sleepType := sleepTypes[m.formSleepIdx]
 	h.OnSleep = &config.SleepAction{Type: sleepType}
@@ -978,7 +992,6 @@ func (m *Model) wakeAndConnectHostCmd(host *config.HostConfig) tea.Cmd {
 			IfaceName:   host.Interface,
 		})
 
-		// Wait loop in background
 		ctx, cancel := context.WithTimeout(context.Background(), m.cfg.Defaults.Timeout)
 		defer cancel()
 
@@ -1024,7 +1037,6 @@ func (m *Model) filteredHosts() []config.HostConfig {
 	}
 
 	if m.sortOnline {
-		// Online first
 		var online, others []config.HostConfig
 		for _, h := range list {
 			st := m.poller.Get(h.Name)
@@ -1199,70 +1211,106 @@ func (m Model) viewListAndDetail() string {
 	return sb.String()
 }
 
+func renderToggleSwitch(enabled bool, isFocused bool) string {
+	onStyle := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(lipgloss.Color("#2E3440")).
+		Background(lipgloss.Color("#A3BE8C")).
+		Padding(0, 1)
+
+	offStyle := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(lipgloss.Color("#ECEFF4")).
+		Background(lipgloss.Color("#4C566A")).
+		Padding(0, 1)
+
+	dimStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#616E88")).
+		Background(lipgloss.Color("#2E3440")).
+		Padding(0, 1)
+
+	if enabled {
+		return onStyle.Render("● ON (Enabled)") + " " + dimStyle.Render("OFF")
+	}
+	return dimStyle.Render("ON") + " " + offStyle.Render("○ OFF (Disabled)")
+}
+
 func (m Model) viewSettings() string {
 	var sb strings.Builder
+	innerWidth := m.width - 8
+	if innerWidth < 64 {
+		innerWidth = 64
+	}
 
-	title := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#88C0D0")).Render("SETTINGS")
-	sb.WriteString(title + "\n")
-	sb.WriteString(hintStyle.Render("[Space/Enter] toggle/select  •  [j/k/Tab] navigate  •  [s/Esc] return to host list") + "\n\n")
+	// 1. Header Banner
+	headerTitle := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(lipgloss.Color("#88C0D0")).
+		Render("SETTINGS & PREFERENCES")
 
+	sb.WriteString(headerTitle + "\n")
+	sb.WriteString(hintStyle.Render("Press [Space] or [Enter] to toggle setting  •  [s] or [Esc] to return to host list") + "\n\n")
+
+	// Notification message if an action occurred
 	if m.settingsMsg != "" {
-		msgStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#A3BE8C"))
+		msgStyle := lipgloss.NewStyle().
+			Bold(true).
+			Foreground(lipgloss.Color("#A3BE8C")).
+			Background(lipgloss.Color("#2E3440")).
+			Padding(0, 1)
 		if strings.Contains(strings.ToLower(m.settingsMsg), "error") || strings.Contains(strings.ToLower(m.settingsMsg), "failed") {
-			msgStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#BF616A"))
+			msgStyle = lipgloss.NewStyle().
+				Bold(true).
+				Foreground(lipgloss.Color("#BF616A")).
+				Background(lipgloss.Color("#2E3440")).
+				Padding(0, 1)
 		}
 		sb.WriteString(msgStyle.Render(m.settingsMsg) + "\n\n")
 	}
 
-	// 1. SECTION: TAILSCALE INTEGRATION
-	sectionTitle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#81A1C1")).Render("TAILSCALE NETWORK INTEGRATION")
+	// 2. SYSTEM PREFERENCES SECTION
+	sectionTitle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#81A1C1")).Render("AUTOMATION & DISPLAY")
 	sb.WriteString(sectionTitle + "\n\n")
 
-	// Option 0: Auto-manage Tailscale toggle
-	autoManageEnabled := m.cfg.Settings.AutoTailscale
-	checkMark := "[ ]"
-	statusText := lipgloss.NewStyle().Foreground(lipgloss.Color("#7B88A1")).Render("Disabled")
-	if autoManageEnabled {
-		checkMark = "[✓]"
-		statusText = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#A3BE8C")).Render("Enabled")
-	}
-
-	opt0Cursor := "  "
-	opt0LabelStyle := formLabelStyle
+	// Row 0: Auto-manage Tailscale
+	cur0 := "  "
+	name0Style := lipgloss.NewStyle().Foreground(lipgloss.Color("#ECEFF4"))
 	if m.settingsFocus == 0 {
-		opt0Cursor = "> "
-		opt0LabelStyle = formFocusLabelStyle
+		cur0 = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#88C0D0")).Render("▶ ")
+		name0Style = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#88C0D0"))
 	}
+	sw0 := renderToggleSwitch(m.cfg.Settings.AutoTailscale, m.settingsFocus == 0)
+	sb.WriteString(fmt.Sprintf("%s%-32s %s\n", cur0, name0Style.Render("Auto-manage Tailscale"), sw0))
+	sb.WriteString(fmt.Sprintf("    %s\n\n", hintStyle.Render("Start Tailscale before scanning on launch; shut it down on quit (if started by Waker)")))
 
-	sb.WriteString(fmt.Sprintf("%s%s %s %s   %s\n",
-		opt0Cursor,
-		opt0LabelStyle.Render("Auto-manage Tailscale"),
-		lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#ECEFF4")).Render(checkMark),
-		statusText,
-		hintStyle.Render("[Space/Enter] toggle"),
-	))
+	// Row 1: Sort Online Hosts First
+	cur1 := "  "
+	name1Style := lipgloss.NewStyle().Foreground(lipgloss.Color("#ECEFF4"))
+	if m.settingsFocus == 1 {
+		cur1 = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#88C0D0")).Render("▶ ")
+		name1Style = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#88C0D0"))
+	}
+	sw1 := renderToggleSwitch(m.sortOnline, m.settingsFocus == 1)
+	sb.WriteString(fmt.Sprintf("%s%-32s %s\n", cur1, name1Style.Render("Sort Online Hosts First"), sw1))
+	sb.WriteString(fmt.Sprintf("    %s\n\n", hintStyle.Render("Pin online and reachable machines to the top of the main host list")))
 
-	// Detailed explanation of behavior
-	descStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#D8DEE9"))
-	bulletStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#88C0D0"))
-	sb.WriteString(fmt.Sprintf("     %s %s\n", bulletStyle.Render("•"), descStyle.Render("On launch: Checks Tailscale status. If offline, runs 'tailscale up' before device scanning.")))
-	sb.WriteString(fmt.Sprintf("     %s %s\n", bulletStyle.Render("•"), descStyle.Render("On quit:   Runs 'tailscale down' IF waker brought Tailscale up on launch.")))
-	sb.WriteString(fmt.Sprintf("     %s %s\n\n", bulletStyle.Render("•"), descStyle.Render("Safety:    If Tailscale was already running on launch, it will NOT be turned off on quit.")))
+	// 3. TAILSCALE LIVE STATUS & ACTION CARD
+	statusTitle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#81A1C1")).Render("TAILSCALE NETWORK STATUS")
+	sb.WriteString(statusTitle + "\n\n")
 
-	// Tailscale Status Info Box
-	tsStatusLine := "Checking Tailscale..."
+	tsStatusLine := "Checking..."
 	tsIPLine := "-"
-	tsManagedLine := "No"
+	tsLifecycleLine := "Tailscale is currently offline"
 	if m.tsStatus != nil {
 		if !m.tsStatus.Installed {
-			tsStatusLine = lipgloss.NewStyle().Foreground(lipgloss.Color("#BF616A")).Render("Tailscale CLI not found in PATH or standard directories")
+			tsStatusLine = lipgloss.NewStyle().Foreground(lipgloss.Color("#BF616A")).Render("Tailscale CLI not found in PATH")
 		} else if m.tsStatus.IsUp {
 			ipStr := ""
 			if m.tsStatus.IP != "" {
-				ipStr = fmt.Sprintf(" (IP: %s)", m.tsStatus.IP)
+				ipStr = fmt.Sprintf(" (%s)", m.tsStatus.IP)
 				tsIPLine = m.tsStatus.IP
 			}
-			tsStatusLine = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#A3BE8C")).Render("● Online / Connected" + ipStr)
+			tsStatusLine = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#A3BE8C")).Render("● Connected" + ipStr)
 		} else {
 			state := m.tsStatus.BackendState
 			if state == "" {
@@ -1273,46 +1321,59 @@ func (m Model) viewSettings() string {
 	}
 
 	if m.tsMgr != nil && m.tsMgr.StartedByWaker() {
-		tsManagedLine = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#EBCB8B")).Render("Yes (will be disconnected when waker quits)")
+		tsLifecycleLine = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#EBCB8B")).Render("Started by Waker (will disconnect when quitting)")
 	} else if m.tsStatus != nil && m.tsStatus.IsUp {
-		tsManagedLine = lipgloss.NewStyle().Foreground(lipgloss.Color("#A3BE8C")).Render("No (was already running before launch — will remain up on quit)")
-	} else {
-		tsManagedLine = lipgloss.NewStyle().Foreground(lipgloss.Color("#7B88A1")).Render("No (Tailscale is currently offline)")
+		tsLifecycleLine = lipgloss.NewStyle().Foreground(lipgloss.Color("#A3BE8C")).Render("External session (will remain connected when quitting)")
 	}
 
-	sb.WriteString(fmt.Sprintf("     %-24s %s\n", lipgloss.NewStyle().Foreground(lipgloss.Color("#7B88A1")).Render("Current Status:"), tsStatusLine))
-	sb.WriteString(fmt.Sprintf("     %-24s %s\n", lipgloss.NewStyle().Foreground(lipgloss.Color("#7B88A1")).Render("Tailscale IP:"), tsIPLine))
-	sb.WriteString(fmt.Sprintf("     %-24s %s\n\n", lipgloss.NewStyle().Foreground(lipgloss.Color("#7B88A1")).Render("Started by waker:"), tsManagedLine))
+	var statusCard strings.Builder
+	lblStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#7B88A1"))
+	statusCard.WriteString(fmt.Sprintf("%-20s %s\n", lblStyle.Render("Connection:"), tsStatusLine))
+	statusCard.WriteString(fmt.Sprintf("%-20s %s\n", lblStyle.Render("Tailscale IP:"), tsIPLine))
+	statusCard.WriteString(fmt.Sprintf("%-20s %s\n\n", lblStyle.Render("Lifecycle Rule:"), tsLifecycleLine))
 
-	// Option 1: Manual connect / disconnect button
+	// Row 2: Manual Connect/Disconnect button
 	actionBtnText := "[ Connect Tailscale Now ]"
 	if m.tsStatus != nil && m.tsStatus.IsUp {
 		actionBtnText = "[ Disconnect Tailscale Now ]"
 	}
 	btnRendered := btnStyle.Background(lipgloss.Color("#2E3440")).Foreground(lipgloss.Color("#D8DEE9")).Render(actionBtnText)
-	if m.settingsFocus == 1 {
-		btnRendered = btnActiveStyle.Render("> " + actionBtnText)
-	}
-	sb.WriteString(fmt.Sprintf("     %s  %s\n\n", btnRendered, hintStyle.Render("[Enter] to execute")))
-
-	// 2. SECTION: CONFIGURATION INFO
-	cfgSectionTitle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#81A1C1")).Render("CONFIGURATION")
-	sb.WriteString(cfgSectionTitle + "\n\n")
-	cfgPathDisplay := m.configPath
-	if cfgPathDisplay == "" {
-		cfgPathDisplay, _ = config.DefaultConfigPath()
-	}
-	sb.WriteString(fmt.Sprintf("     %-24s %s\n", lipgloss.NewStyle().Foreground(lipgloss.Color("#7B88A1")).Render("Config File:"), cfgPathDisplay))
-	sb.WriteString(fmt.Sprintf("     %-24s %d hosts\n", lipgloss.NewStyle().Foreground(lipgloss.Color("#7B88A1")).Render("Configured Hosts:"), len(m.cfg.Hosts)))
-	sb.WriteString(fmt.Sprintf("     %-24s %v\n", lipgloss.NewStyle().Foreground(lipgloss.Color("#7B88A1")).Render("Poll Interval:"), m.cfg.Defaults.PollInterval))
-	sb.WriteString(fmt.Sprintf("     %-24s %v\n\n", lipgloss.NewStyle().Foreground(lipgloss.Color("#7B88A1")).Render("Probe Timeout:"), m.cfg.Defaults.ProbeTimeout))
-
-	// Option 2: Back Button
-	backBtn := btnStyle.Background(lipgloss.Color("#2E3440")).Foreground(lipgloss.Color("#7B88A1")).Render("[ Return to Host List ]")
+	cur2 := "  "
 	if m.settingsFocus == 2 {
-		backBtn = btnStyle.Background(lipgloss.Color("#4C566A")).Foreground(lipgloss.Color("#ECEFF4")).Bold(true).Render("> [ Return to Host List ]")
+		cur2 = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#88C0D0")).Render("▶ ")
+		btnRendered = btnActiveStyle.Render(actionBtnText)
 	}
-	sb.WriteString(fmt.Sprintf("     %s\n", backBtn))
+	statusCard.WriteString(fmt.Sprintf("%s%s  %s", cur2, btnRendered, hintStyle.Render("(Press Enter, or press [t] anytime)")))
+
+	cardBox := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("#3B4252")).
+		Padding(0, 1).
+		Width(innerWidth)
+	sb.WriteString(cardBox.Render(statusCard.String()) + "\n\n")
+
+	// 4. HOW AUTO-MANAGEMENT WORKS (Informational Card)
+	rulesTitle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#81A1C1")).Render("AUTO-MANAGEMENT RULES")
+	sb.WriteString(rulesTitle + "\n\n")
+
+	var rulesBox strings.Builder
+	bullet := lipgloss.NewStyle().Foreground(lipgloss.Color("#88C0D0")).Render("•")
+	boldText := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#ECEFF4"))
+	dimText := lipgloss.NewStyle().Foreground(lipgloss.Color("#D8DEE9"))
+
+	rulesBox.WriteString(fmt.Sprintf("%s %s %s\n", bullet, boldText.Render("Launch:"), dimText.Render("If Tailscale is offline, Waker runs 'tailscale up' before probing hosts.")))
+	rulesBox.WriteString(fmt.Sprintf("%s %s %s\n", bullet, boldText.Render("Quit:  "), dimText.Render("If Tailscale was started by Waker, it runs 'tailscale down' on exit.")))
+	rulesBox.WriteString(fmt.Sprintf("%s %s %s", bullet, boldText.Render("Safety:"), dimText.Render("If Tailscale was already active on launch, Waker leaves it running on exit.")))
+
+	rulesCard := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("#3B4252")).
+		Padding(0, 1).
+		Width(innerWidth)
+	sb.WriteString(rulesCard.Render(rulesBox.String()) + "\n\n")
+
+	// 5. Footer Hotkey Legend
+	sb.WriteString(headerStyle.Render("[Space / Enter] Toggle Setting  •  [↑/↓/j/k] Navigate  •  [t] Quick Tailscale  •  [s / Esc] Back"))
 
 	return panelStyle.Width(m.width - 4).Render(sb.String())
 }
@@ -1427,7 +1488,6 @@ func (m Model) viewForm() string {
 		hintStyle.Render("[← / →] to switch"),
 	))
 
-	// Dynamic Connect fields based on selection
 	switch m.formConnTypeIdx {
 	case 0: // SSH
 		sb.WriteString(renderField("SSH User", m.formInputs[4], m.formFocus == 5, "") + "\n")
