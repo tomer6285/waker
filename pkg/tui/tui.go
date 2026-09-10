@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -15,6 +16,7 @@ import (
 	"github.com/tomer/waker/pkg/presence"
 	"github.com/tomer/waker/pkg/sleeper"
 	"github.com/tomer/waker/pkg/store"
+	"github.com/tomer/waker/pkg/tailscale"
 	"github.com/tomer/waker/pkg/wol"
 )
 
@@ -26,6 +28,7 @@ const (
 	ModeForm
 	ModeHelp
 	ModeLogs
+	ModeSettings
 )
 
 type StatusUpdateMsg map[string]*presence.HostStatusInfo
@@ -38,6 +41,11 @@ type WakeCompletedMsg struct {
 type SleepCompletedMsg struct {
 	HostName string
 	Err      error
+}
+type TailscaleStatusMsg *tailscale.Status
+type TailscaleActionCompletedMsg struct {
+	Action string
+	Err    error
 }
 
 var (
@@ -110,6 +118,8 @@ type Model struct {
 	store      *store.Store
 	poller     *presence.Poller
 	sleeper    *sleeper.Sleeper
+	tsMgr      *tailscale.Manager
+	tsStatus   *tailscale.Status
 	configPath string
 
 	mode        ViewMode
@@ -122,6 +132,10 @@ type Model struct {
 	spinner spinner.Model
 	logs    []string
 	status  string
+
+	// Settings
+	settingsFocus int // 0: toggle auto tailscale, 1: manual connect/disconnect button, 2: back button
+	settingsMsg   string
 
 	// Form editing
 	formInputs      []textinput.Model
@@ -140,6 +154,10 @@ type Model struct {
 }
 
 func NewModel(cfg *config.Config, st *store.Store, poller *presence.Poller, configPath string) Model {
+	return NewModelWithTailscale(cfg, st, poller, configPath, tailscale.NewManager())
+}
+
+func NewModelWithTailscale(cfg *config.Config, st *store.Store, poller *presence.Poller, configPath string, tsMgr *tailscale.Manager) Model {
 	s := spinner.New()
 	s.Spinner = spinner.Dot
 	s.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("#E0AF68"))
@@ -148,11 +166,16 @@ func NewModel(cfg *config.Config, st *store.Store, poller *presence.Poller, conf
 	fi.Placeholder = "type to filter..."
 	fi.Prompt = "/ "
 
+	if tsMgr == nil {
+		tsMgr = tailscale.NewManager()
+	}
+
 	m := Model{
 		cfg:         cfg,
 		store:       st,
 		poller:      poller,
 		sleeper:     sleeper.NewSleeper(),
+		tsMgr:       tsMgr,
 		configPath:  configPath,
 		mode:        ModeList,
 		spinner:     s,
@@ -307,6 +330,7 @@ func (m Model) Init() tea.Cmd {
 	return tea.Batch(
 		m.spinner.Tick,
 		m.pollTickCmd(),
+		m.checkTailscaleStatusCmd(),
 	)
 }
 
@@ -357,6 +381,30 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case TailscaleStatusMsg:
+		m.tsStatus = (*tailscale.Status)(msg)
+		return m, nil
+
+	case TailscaleActionCompletedMsg:
+		if msg.Err != nil {
+			m.settingsMsg = fmt.Sprintf("Error: %v", msg.Err)
+			m.addLog(fmt.Sprintf("Tailscale %s error: %v", msg.Action, msg.Err))
+		} else {
+			if msg.Action == "up" {
+				m.settingsMsg = "Tailscale connected successfully ✓"
+				m.addLog("Tailscale connected ✓")
+			} else {
+				m.settingsMsg = "Tailscale disconnected successfully ✓"
+				m.addLog("Tailscale disconnected ✓")
+			}
+		}
+		return m, tea.Batch(
+			m.checkTailscaleStatusCmd(),
+			func() tea.Msg {
+				return StatusUpdateMsg(m.poller.PollOnce(context.Background()))
+			},
+		)
+
 	case spinner.TickMsg:
 		var cmd tea.Cmd
 		m.spinner, cmd = m.spinner.Update(msg)
@@ -377,6 +425,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			default:
 				return m, nil
 			}
+		}
+
+		// Handle Settings input
+		if m.mode == ModeSettings {
+			return m.handleSettingsKeys(msg)
 		}
 
 		// Handle Form input
@@ -415,6 +468,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.mode = ModeHelp
 			}
 			return m, nil
+
+		case "s":
+			m.mode = ModeSettings
+			m.settingsFocus = 0
+			m.settingsMsg = ""
+			return m, m.checkTailscaleStatusCmd()
 
 		case "l":
 			if m.mode == ModeLogs {
@@ -524,6 +583,107 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, tea.Batch(cmds...)
 }
 
+func (m *Model) handleSettingsKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "s", "esc":
+		m.mode = ModeList
+		m.settingsMsg = ""
+		return *m, nil
+
+	case "tab", "down", "j":
+		m.settingsFocus = (m.settingsFocus + 1) % 3
+		return *m, nil
+
+	case "shift+tab", "up", "k":
+		m.settingsFocus = (m.settingsFocus - 1 + 3) % 3
+		return *m, nil
+
+	case " ":
+		if m.settingsFocus == 0 {
+			return m.toggleAutoTailscale()
+		}
+
+	case "enter":
+		switch m.settingsFocus {
+		case 0:
+			return m.toggleAutoTailscale()
+		case 1:
+			// Toggle Tailscale Up/Down manually
+			if m.tsStatus != nil && m.tsStatus.IsUp {
+				m.settingsMsg = "Disconnecting Tailscale..."
+				return *m, m.tailscaleDownCmd()
+			}
+			m.settingsMsg = "Connecting Tailscale..."
+			return *m, m.tailscaleUpCmd()
+		case 2:
+			m.mode = ModeList
+			m.settingsMsg = ""
+			return *m, nil
+		}
+
+	case "ctrl+c", "q":
+		return *m, tea.Quit
+	}
+	return *m, nil
+}
+
+func (m *Model) toggleAutoTailscale() (tea.Model, tea.Cmd) {
+	m.cfg.Settings.AutoTailscale = !m.cfg.Settings.AutoTailscale
+	err := m.cfg.Save(m.configPath)
+	if err != nil {
+		m.settingsMsg = fmt.Sprintf("Save failed: %v", err)
+	} else {
+		if m.cfg.Settings.AutoTailscale {
+			m.settingsMsg = "Tailscale auto-management ENABLED (saved)"
+			m.addLog("Settings: Tailscale auto-management enabled")
+		} else {
+			m.settingsMsg = "Tailscale auto-management DISABLED (saved)"
+			m.addLog("Settings: Tailscale auto-management disabled")
+		}
+	}
+	return *m, nil
+}
+
+func (m *Model) checkTailscaleStatusCmd() tea.Cmd {
+	return func() tea.Msg {
+		if m.tsMgr == nil {
+			return TailscaleStatusMsg(nil)
+		}
+		st, _ := m.tsMgr.Status(context.Background())
+		return TailscaleStatusMsg(st)
+	}
+}
+
+func (m *Model) tailscaleUpCmd() tea.Cmd {
+	return func() tea.Msg {
+		if m.tsMgr == nil {
+			return TailscaleActionCompletedMsg{Action: "up", Err: errors.New("tailscale manager not available")}
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		err := m.tsMgr.Up(ctx)
+		if err == nil {
+			m.tsMgr.SetStartedByWaker(true)
+		}
+		return TailscaleActionCompletedMsg{Action: "up", Err: err}
+	}
+}
+
+func (m *Model) tailscaleDownCmd() tea.Cmd {
+	return func() tea.Msg {
+		if m.tsMgr == nil {
+			return TailscaleActionCompletedMsg{Action: "down", Err: errors.New("tailscale manager not available")}
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		err := m.tsMgr.Down(ctx)
+		if err == nil {
+			m.tsMgr.SetStartedByWaker(false)
+		}
+		return TailscaleActionCompletedMsg{Action: "down", Err: err}
+	}
+}
+
 func (m *Model) handleFormKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	connTypes := []string{"SSH", "Parsec", "Mount (SMB/NFS)", "Game (Steam)", "Custom"}
 	sleepTypes := []string{"SSH (Standard)", "Agent (HTTP)", "Custom"}
@@ -534,19 +694,19 @@ func (m *Model) handleFormKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "esc":
 		m.mode = ModeList
 		m.formErrorMsg = ""
-		return m, nil
+		return *m, nil
 
 	case "tab", "down":
 		m.formErrorMsg = ""
 		m.formFocus = (m.formFocus + 1) % totalFocusable
 		m.applyFormFocus()
-		return m, nil
+		return *m, nil
 
 	case "shift+tab", "up":
 		m.formErrorMsg = ""
 		m.formFocus = (m.formFocus - 1 + totalFocusable) % totalFocusable
 		m.applyFormFocus()
-		return m, nil
+		return *m, nil
 
 	case "left", "h":
 		if m.formFocus == 4 { // Connect Type
@@ -554,18 +714,18 @@ func (m *Model) handleFormKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.formConnTypeIdx--
 				m.updateDynamicPlaceholders()
 			}
-			return m, nil
+			return *m, nil
 		}
 		if m.formFocus == 7 { // Sleep Type
 			if m.formSleepIdx > 0 {
 				m.formSleepIdx--
 				m.updateDynamicPlaceholders()
 			}
-			return m, nil
+			return *m, nil
 		}
 		if m.formFocus == 10 { // Cancel button -> Save button
 			m.formFocus = 9
-			return m, nil
+			return *m, nil
 		}
 
 	case "right", "l":
@@ -574,18 +734,18 @@ func (m *Model) handleFormKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.formConnTypeIdx++
 				m.updateDynamicPlaceholders()
 			}
-			return m, nil
+			return *m, nil
 		}
 		if m.formFocus == 7 { // Sleep Type
 			if m.formSleepIdx < len(sleepTypes)-1 {
 				m.formSleepIdx++
 				m.updateDynamicPlaceholders()
 			}
-			return m, nil
+			return *m, nil
 		}
 		if m.formFocus == 9 { // Save button -> Cancel button
 			m.formFocus = 10
-			return m, nil
+			return *m, nil
 		}
 
 	case "enter":
@@ -593,7 +753,7 @@ func (m *Model) handleFormKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.formFocus == 10 {
 			m.mode = ModeList
 			m.formErrorMsg = ""
-			return m, nil
+			return *m, nil
 		}
 
 		// If on Save button
@@ -604,7 +764,7 @@ func (m *Model) handleFormKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// Otherwise advance to next focus item
 		m.formFocus = (m.formFocus + 1) % totalFocusable
 		m.applyFormFocus()
-		return m, nil
+		return *m, nil
 
 	default:
 		// Forward typing to focused text input
@@ -612,10 +772,10 @@ func (m *Model) handleFormKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if inputIdx >= 0 && inputIdx < len(m.formInputs) {
 			var cmd tea.Cmd
 			m.formInputs[inputIdx], cmd = m.formInputs[inputIdx].Update(msg)
-			return m, cmd
+			return *m, cmd
 		}
 	}
-	return m, nil
+	return *m, nil
 }
 
 func (m *Model) currentInputIndex() int {
@@ -654,28 +814,28 @@ func (m *Model) submitForm() (tea.Model, tea.Cmd) {
 	h, err := m.parseFormHost()
 	if err != nil {
 		m.formErrorMsg = err.Error()
-		return m, nil
+		return *m, nil
 	}
 
 	if err := h.Validate(); err != nil {
 		m.formErrorMsg = fmt.Sprintf("Validation: %v", err)
-		return m, nil
+		return *m, nil
 	}
 
 	if err := m.cfg.UpsertHost(h); err != nil {
 		m.formErrorMsg = fmt.Sprintf("Config error: %v", err)
-		return m, nil
+		return *m, nil
 	}
 
 	if err := m.cfg.Save(m.configPath); err != nil {
 		m.formErrorMsg = fmt.Sprintf("Save failed: %v", err)
-		return m, nil
+		return *m, nil
 	}
 
 	m.mode = ModeList
 	m.formErrorMsg = ""
 	m.addLog(fmt.Sprintf("Saved host '%s' ✓", h.Name))
-	return m, nil
+	return *m, nil
 }
 
 func (m *Model) parseFormHost() (config.HostConfig, error) {
@@ -785,11 +945,11 @@ func (m *Model) wakeHostCmd(host *config.HostConfig) tea.Cmd {
 
 func (m *Model) sleepHostCmd(hostName string) tea.Cmd {
 	return func() tea.Msg {
-		host, err := m.cfg.FindHost(hostName)
+		thost, err := m.cfg.FindHost(hostName)
 		if err != nil {
 			return SleepCompletedMsg{HostName: hostName, Err: err}
 		}
-		err = m.sleeper.Sleep(context.Background(), host)
+		err = m.sleeper.Sleep(context.Background(), thost)
 		return SleepCompletedMsg{HostName: hostName, Err: err}
 	}
 }
@@ -905,7 +1065,7 @@ func (m Model) View() string {
 			onlineCount++
 		}
 	}
-	headerRight = fmt.Sprintf("[%d/%d online] [? help | q quit]", onlineCount, len(m.cfg.Hosts))
+	headerRight = fmt.Sprintf("[%d/%d online] [s settings | ? help | q quit]", onlineCount, len(m.cfg.Hosts))
 	sb.WriteString(lipgloss.JoinHorizontal(lipgloss.Top, title, " ", headerStyle.Render(headerRight)))
 	sb.WriteString("\n\n")
 
@@ -925,6 +1085,8 @@ func (m Model) View() string {
 		return m.viewLogs()
 	case ModeForm:
 		return m.viewForm()
+	case ModeSettings:
+		return m.viewSettings()
 	default:
 		return m.viewListAndDetail()
 	}
@@ -1032,9 +1194,127 @@ func (m Model) viewListAndDetail() string {
 	sb.WriteString("\n")
 
 	// Footer hotkeys
-	sb.WriteString(headerStyle.Render("[Enter] Wake/Connect  [c] Connect  [w] Wake  [z] Sleep  [a] Add  [e] Edit  [d] Delete  [r] Refresh"))
+	sb.WriteString(headerStyle.Render("[Enter] Wake/Connect  [c] Connect  [w] Wake  [z] Sleep  [s] Settings  [a] Add  [e] Edit  [d] Delete  [r] Refresh"))
 
 	return sb.String()
+}
+
+func (m Model) viewSettings() string {
+	var sb strings.Builder
+
+	title := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#88C0D0")).Render("SETTINGS")
+	sb.WriteString(title + "\n")
+	sb.WriteString(hintStyle.Render("[Space/Enter] toggle/select  •  [j/k/Tab] navigate  •  [s/Esc] return to host list") + "\n\n")
+
+	if m.settingsMsg != "" {
+		msgStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#A3BE8C"))
+		if strings.Contains(strings.ToLower(m.settingsMsg), "error") || strings.Contains(strings.ToLower(m.settingsMsg), "failed") {
+			msgStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#BF616A"))
+		}
+		sb.WriteString(msgStyle.Render(m.settingsMsg) + "\n\n")
+	}
+
+	// 1. SECTION: TAILSCALE INTEGRATION
+	sectionTitle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#81A1C1")).Render("TAILSCALE NETWORK INTEGRATION")
+	sb.WriteString(sectionTitle + "\n\n")
+
+	// Option 0: Auto-manage Tailscale toggle
+	autoManageEnabled := m.cfg.Settings.AutoTailscale
+	checkMark := "[ ]"
+	statusText := lipgloss.NewStyle().Foreground(lipgloss.Color("#7B88A1")).Render("Disabled")
+	if autoManageEnabled {
+		checkMark = "[✓]"
+		statusText = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#A3BE8C")).Render("Enabled")
+	}
+
+	opt0Cursor := "  "
+	opt0LabelStyle := formLabelStyle
+	if m.settingsFocus == 0 {
+		opt0Cursor = "> "
+		opt0LabelStyle = formFocusLabelStyle
+	}
+
+	sb.WriteString(fmt.Sprintf("%s%s %s %s   %s\n",
+		opt0Cursor,
+		opt0LabelStyle.Render("Auto-manage Tailscale"),
+		lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#ECEFF4")).Render(checkMark),
+		statusText,
+		hintStyle.Render("[Space/Enter] toggle"),
+	))
+
+	// Detailed explanation of behavior
+	descStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#D8DEE9"))
+	bulletStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#88C0D0"))
+	sb.WriteString(fmt.Sprintf("     %s %s\n", bulletStyle.Render("•"), descStyle.Render("On launch: Checks Tailscale status. If offline, runs 'tailscale up' before device scanning.")))
+	sb.WriteString(fmt.Sprintf("     %s %s\n", bulletStyle.Render("•"), descStyle.Render("On quit:   Runs 'tailscale down' IF waker brought Tailscale up on launch.")))
+	sb.WriteString(fmt.Sprintf("     %s %s\n\n", bulletStyle.Render("•"), descStyle.Render("Safety:    If Tailscale was already running on launch, it will NOT be turned off on quit.")))
+
+	// Tailscale Status Info Box
+	tsStatusLine := "Checking Tailscale..."
+	tsIPLine := "-"
+	tsManagedLine := "No"
+	if m.tsStatus != nil {
+		if !m.tsStatus.Installed {
+			tsStatusLine = lipgloss.NewStyle().Foreground(lipgloss.Color("#BF616A")).Render("Tailscale CLI not found in PATH or standard directories")
+		} else if m.tsStatus.IsUp {
+			ipStr := ""
+			if m.tsStatus.IP != "" {
+				ipStr = fmt.Sprintf(" (IP: %s)", m.tsStatus.IP)
+				tsIPLine = m.tsStatus.IP
+			}
+			tsStatusLine = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#A3BE8C")).Render("● Online / Connected" + ipStr)
+		} else {
+			state := m.tsStatus.BackendState
+			if state == "" {
+				state = "Stopped / Offline"
+			}
+			tsStatusLine = lipgloss.NewStyle().Foreground(lipgloss.Color("#EBCB8B")).Render("○ " + state)
+		}
+	}
+
+	if m.tsMgr != nil && m.tsMgr.StartedByWaker() {
+		tsManagedLine = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#EBCB8B")).Render("Yes (will be disconnected when waker quits)")
+	} else if m.tsStatus != nil && m.tsStatus.IsUp {
+		tsManagedLine = lipgloss.NewStyle().Foreground(lipgloss.Color("#A3BE8C")).Render("No (was already running before launch — will remain up on quit)")
+	} else {
+		tsManagedLine = lipgloss.NewStyle().Foreground(lipgloss.Color("#7B88A1")).Render("No (Tailscale is currently offline)")
+	}
+
+	sb.WriteString(fmt.Sprintf("     %-24s %s\n", lipgloss.NewStyle().Foreground(lipgloss.Color("#7B88A1")).Render("Current Status:"), tsStatusLine))
+	sb.WriteString(fmt.Sprintf("     %-24s %s\n", lipgloss.NewStyle().Foreground(lipgloss.Color("#7B88A1")).Render("Tailscale IP:"), tsIPLine))
+	sb.WriteString(fmt.Sprintf("     %-24s %s\n\n", lipgloss.NewStyle().Foreground(lipgloss.Color("#7B88A1")).Render("Started by waker:"), tsManagedLine))
+
+	// Option 1: Manual connect / disconnect button
+	actionBtnText := "[ Connect Tailscale Now ]"
+	if m.tsStatus != nil && m.tsStatus.IsUp {
+		actionBtnText = "[ Disconnect Tailscale Now ]"
+	}
+	btnRendered := btnStyle.Background(lipgloss.Color("#2E3440")).Foreground(lipgloss.Color("#D8DEE9")).Render(actionBtnText)
+	if m.settingsFocus == 1 {
+		btnRendered = btnActiveStyle.Render("> " + actionBtnText)
+	}
+	sb.WriteString(fmt.Sprintf("     %s  %s\n\n", btnRendered, hintStyle.Render("[Enter] to execute")))
+
+	// 2. SECTION: CONFIGURATION INFO
+	cfgSectionTitle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#81A1C1")).Render("CONFIGURATION")
+	sb.WriteString(cfgSectionTitle + "\n\n")
+	cfgPathDisplay := m.configPath
+	if cfgPathDisplay == "" {
+		cfgPathDisplay, _ = config.DefaultConfigPath()
+	}
+	sb.WriteString(fmt.Sprintf("     %-24s %s\n", lipgloss.NewStyle().Foreground(lipgloss.Color("#7B88A1")).Render("Config File:"), cfgPathDisplay))
+	sb.WriteString(fmt.Sprintf("     %-24s %d hosts\n", lipgloss.NewStyle().Foreground(lipgloss.Color("#7B88A1")).Render("Configured Hosts:"), len(m.cfg.Hosts)))
+	sb.WriteString(fmt.Sprintf("     %-24s %v\n", lipgloss.NewStyle().Foreground(lipgloss.Color("#7B88A1")).Render("Poll Interval:"), m.cfg.Defaults.PollInterval))
+	sb.WriteString(fmt.Sprintf("     %-24s %v\n\n", lipgloss.NewStyle().Foreground(lipgloss.Color("#7B88A1")).Render("Probe Timeout:"), m.cfg.Defaults.ProbeTimeout))
+
+	// Option 2: Back Button
+	backBtn := btnStyle.Background(lipgloss.Color("#2E3440")).Foreground(lipgloss.Color("#7B88A1")).Render("[ Return to Host List ]")
+	if m.settingsFocus == 2 {
+		backBtn = btnStyle.Background(lipgloss.Color("#4C566A")).Foreground(lipgloss.Color("#ECEFF4")).Bold(true).Render("> [ Return to Host List ]")
+	}
+	sb.WriteString(fmt.Sprintf("     %s\n", backBtn))
+
+	return panelStyle.Width(m.width - 4).Render(sb.String())
 }
 
 func (m Model) viewHelp() string {
@@ -1053,6 +1333,7 @@ Actions:
   w              Send Wake-on-LAN magic packet only
   z              Suspend / Sleep host (ssh / agent / custom)
   p              Manual ping / health check probe
+  s              Open settings page (Tailscale auto-management, options)
   a              Add a new host
   e              Edit selected host
   d              Delete selected host

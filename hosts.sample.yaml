@@ -1,4 +1,6 @@
 version: 1
+settings:
+  auto_tailscale: false # Automatically start Tailscale before scanning on launch, and shut down on quit
 defaults:
   broadcast: 127.0.0.1
   wol_port: 9

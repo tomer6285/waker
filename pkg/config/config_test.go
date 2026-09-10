@@ -137,3 +137,41 @@ func TestConfigDirAndYmlFallback(t *testing.T) {
 	}
 }
 
+func TestConfigSettingsAutoTailscale(t *testing.T) {
+	yamlContent := `
+version: 1
+settings:
+  auto_tailscale: true
+hosts:
+  - name: my-host
+    mac: "11:22:33:44:55:66"
+`
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "hosts.yaml")
+	if err := os.WriteFile(configPath, []byte(yamlContent), 0600); err != nil {
+		t.Fatalf("failed to write temp config: %v", err)
+	}
+
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+
+	if !cfg.Settings.AutoTailscale {
+		t.Errorf("expected AutoTailscale to be true")
+	}
+
+	// Test saving and reloading
+	cfg.Settings.AutoTailscale = false
+	if err := cfg.Save(configPath); err != nil {
+		t.Fatalf("Save failed: %v", err)
+	}
+
+	reloaded, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("Reload failed: %v", err)
+	}
+	if reloaded.Settings.AutoTailscale {
+		t.Errorf("expected AutoTailscale to be false after save/reload")
+	}
+}

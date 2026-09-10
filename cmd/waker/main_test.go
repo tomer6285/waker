@@ -11,6 +11,7 @@ import (
 
 	"github.com/tomer/waker/pkg/config"
 	"github.com/tomer/waker/pkg/sleeper"
+	"github.com/tomer/waker/pkg/tailscale"
 	"github.com/tomer/waker/pkg/wol"
 )
 
@@ -134,6 +135,69 @@ func TestSleepWaitOfflinePipeline(t *testing.T) {
 	err = sleeper.WaitForOffline(context.Background(), host, 3*time.Second)
 	if err != nil {
 		t.Fatalf("WaitForOffline failed: %v", err)
+	}
+}
+
+type mockTSClient struct {
+	isUp      bool
+	upCalls   int
+	downCalls int
+}
+
+func (m *mockTSClient) IsUp(ctx context.Context) (bool, error) {
+	return m.isUp, nil
+}
+func (m *mockTSClient) Up(ctx context.Context) error {
+	m.upCalls++
+	m.isUp = true
+	return nil
+}
+func (m *mockTSClient) Down(ctx context.Context) error {
+	m.downCalls++
+	m.isUp = false
+	return nil
+}
+func (m *mockTSClient) Status(ctx context.Context) (*tailscale.Status, error) {
+	return &tailscale.Status{Installed: true, IsUp: m.isUp}, nil
+}
+
+func TestTailscaleLaunchAndQuitLifecycle(t *testing.T) {
+	// Case 1: auto_tailscale is true and Tailscale is down on launch
+	// Expect: Up is called on launch, Down is called on quit
+	mock1 := &mockTSClient{isUp: false}
+	mgr1 := tailscale.NewManagerWithClient(mock1)
+
+	started, err := mgr1.OnLaunch(context.Background(), true)
+	if err != nil || !started {
+		t.Fatalf("expected started=true, err=nil; got started=%v err=%v", started, err)
+	}
+	if mock1.upCalls != 1 {
+		t.Fatalf("expected 1 Up call, got %d", mock1.upCalls)
+	}
+	if err := mgr1.OnQuit(context.Background(), true); err != nil {
+		t.Fatalf("quit error: %v", err)
+	}
+	if mock1.downCalls != 1 {
+		t.Fatalf("expected 1 Down call on quit, got %d", mock1.downCalls)
+	}
+
+	// Case 2: auto_tailscale is true and Tailscale is ALREADY up on launch
+	// Expect: Up is NOT called, Down is NOT called on quit
+	mock2 := &mockTSClient{isUp: true}
+	mgr2 := tailscale.NewManagerWithClient(mock2)
+
+	started, err = mgr2.OnLaunch(context.Background(), true)
+	if err != nil || started {
+		t.Fatalf("expected started=false, err=nil; got started=%v err=%v", started, err)
+	}
+	if mock2.upCalls != 0 {
+		t.Fatalf("expected 0 Up calls, got %d", mock2.upCalls)
+	}
+	if err := mgr2.OnQuit(context.Background(), true); err != nil {
+		t.Fatalf("quit error: %v", err)
+	}
+	if mock2.downCalls != 0 {
+		t.Fatalf("expected 0 Down calls on quit because Tailscale was already running, got %d", mock2.downCalls)
 	}
 }
 

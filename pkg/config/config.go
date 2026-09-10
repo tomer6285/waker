@@ -63,6 +63,10 @@ func (h *HostConfig) ShouldCheckSubnet() bool {
 	return *h.SubnetCheck
 }
 
+type SettingsConfig struct {
+	AutoTailscale bool `yaml:"auto_tailscale,omitempty"`
+}
+
 type DefaultsConfig struct {
 	Broadcast     string            `yaml:"broadcast,omitempty"`
 	WOLPort       int               `yaml:"wol_port,omitempty"`
@@ -75,6 +79,7 @@ type DefaultsConfig struct {
 
 type Config struct {
 	Version  int            `yaml:"version"`
+	Settings SettingsConfig `yaml:"settings,omitempty"`
 	Defaults DefaultsConfig `yaml:"defaults"`
 	Hosts    []HostConfig   `yaml:"hosts"`
 }
