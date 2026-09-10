@@ -647,18 +647,23 @@ func (m *Model) handleSettingsKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m *Model) toggleAutoTailscale() (tea.Model, tea.Cmd) {
 	m.cfg.Settings.AutoTailscale = !m.cfg.Settings.AutoTailscale
 	err := m.cfg.Save(m.configPath)
+	var cmd tea.Cmd
 	if err != nil {
 		m.settingsMsg = fmt.Sprintf("Save failed: %v", err)
 	} else {
 		if m.cfg.Settings.AutoTailscale {
 			m.settingsMsg = "Tailscale auto-management ENABLED (saved to hosts.yaml)"
 			m.addLog("Settings: Tailscale auto-management enabled")
+			if m.tsStatus == nil || !m.tsStatus.IsUp {
+				m.settingsMsg = "Tailscale auto-management ENABLED — connecting..."
+				cmd = m.tailscaleUpCmd()
+			}
 		} else {
 			m.settingsMsg = "Tailscale auto-management DISABLED (saved to hosts.yaml)"
 			m.addLog("Settings: Tailscale auto-management disabled")
 		}
 	}
-	return *m, nil
+	return *m, cmd
 }
 
 func (m *Model) checkTailscaleStatusCmd() tea.Cmd {
@@ -1020,6 +1025,11 @@ func (m *Model) addLog(entry string) {
 	if len(m.logs) > 50 {
 		m.logs = m.logs[len(m.logs)-50:]
 	}
+}
+
+// AddLog appends a message to the activity log.
+func (m *Model) AddLog(entry string) {
+	m.addLog(entry)
 }
 
 func (m *Model) filteredHosts() []config.HostConfig {

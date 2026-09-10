@@ -37,9 +37,11 @@ var rootCmd = &cobra.Command{
 		st, _ := store.LoadStore("")
 
 		tsMgr := tailscale.NewManager()
+		var tsBroughtUp bool
+		var tsLaunchErr error
 		if cfg.Settings.AutoTailscale {
 			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-			_, _ = tsMgr.OnLaunch(ctx, cfg.Settings.AutoTailscale)
+			tsBroughtUp, tsLaunchErr = tsMgr.OnLaunch(ctx, cfg.Settings.AutoTailscale)
 			cancel()
 		}
 
@@ -54,7 +56,13 @@ var rootCmd = &cobra.Command{
 		poller := presence.NewPoller(cfg, st)
 		poller.PollOnce(context.Background())
 
-		p := tea.NewProgram(tui.NewModelWithTailscale(cfg, st, poller, cfgFile, tsMgr), tea.WithAltScreen())
+		model := tui.NewModelWithTailscale(cfg, st, poller, cfgFile, tsMgr)
+		if tsBroughtUp {
+			model.AddLog("Tailscale connected on launch ✓")
+		} else if tsLaunchErr != nil {
+			model.AddLog(fmt.Sprintf("Tailscale launch failed: %v", tsLaunchErr))
+		}
+		p := tea.NewProgram(model, tea.WithAltScreen())
 		_, err = p.Run()
 		return err
 	},

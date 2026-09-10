@@ -8,21 +8,22 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 )
 
 var (
 	ErrTailscaleNotFound = errors.New("tailscale binary not found")
 )
 
-// Status represents the current operational status of Tailscale on this host.
+// Status represents the current state of Tailscale.
 type Status struct {
-	Installed    bool   `json:"installed"`
-	BinaryPath   string `json:"binary_path,omitempty"`
-	BackendState string `json:"backend_state,omitempty"`
-	IsUp         bool   `json:"is_up"`
-	IP           string `json:"ip,omitempty"`
-	Version      string `json:"version,omitempty"`
-	Err          error  `json:"-"`
+	Installed    bool
+	BinaryPath   string
+	BackendState string
+	IsUp         bool
+	IP           string
+	Version      string
+	Err          error
 }
 
 // Client defines the interface for interacting with Tailscale.
@@ -33,28 +34,31 @@ type Client interface {
 	Status(ctx context.Context) (*Status, error)
 }
 
-// CLIClient interacts with Tailscale via the local CLI binary.
+// CLIClient interacts with the official tailscale CLI binary.
 type CLIClient struct {
 	BinaryPath string
 }
 
-// NewCLIClient creates a new CLI-based Tailscale client.
+// NewCLIClient creates a new CLIClient with automatic binary detection.
 func NewCLIClient() *CLIClient {
 	return &CLIClient{}
 }
 
-// FindTailscaleBinary locates the tailscale binary on the machine.
+// FindTailscaleBinary attempts to locate the tailscale CLI executable.
 func FindTailscaleBinary() (string, error) {
-	if p, err := exec.LookPath("tailscale"); err == nil {
-		return p, nil
+	// 1. Check PATH
+	if path, err := exec.LookPath("tailscale"); err == nil {
+		return path, nil
 	}
+
+	// 2. Common platform paths
 	candidates := []string{
 		"/usr/local/bin/tailscale",
 		"/opt/homebrew/bin/tailscale",
 		"/Applications/Tailscale.app/Contents/MacOS/Tailscale",
 		"/usr/bin/tailscale",
-		"/bin/tailscale",
 	}
+
 	for _, cand := range candidates {
 		if fi, err := os.Stat(cand); err == nil && !fi.IsDir() {
 			return cand, nil
@@ -140,18 +144,37 @@ func (c *CLIClient) IsUp(ctx context.Context) (bool, error) {
 	return st.IsUp, nil
 }
 
-// Up runs `tailscale up --timeout=15s`.
+// Up runs `tailscale up`.
+// Note: flags are deliberately omitted here. Passing any flag (like --timeout) causes Tailscale
+// to fail with an error if non-default settings (such as exit nodes or route preferences)
+// were previously configured on the device.
 func (c *CLIClient) Up(ctx context.Context) error {
 	bin, err := c.binary()
 	if err != nil {
 		return err
 	}
-	cmd := exec.CommandContext(ctx, bin, "up", "--timeout=15s")
+	cmd := exec.CommandContext(ctx, bin, "up")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("tailscale up failed (%s): %w", strings.TrimSpace(string(out)), err)
 	}
-	return nil
+
+	if isUp, _ := c.IsUp(ctx); isUp {
+		return nil
+	}
+
+	ticker := time.NewTicker(300 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+			if isUp, _ := c.IsUp(ctx); isUp {
+				return nil
+			}
+		}
+	}
 }
 
 // Down runs `tailscale down`.
@@ -221,33 +244,27 @@ func (m *Manager) OnQuit(ctx context.Context, autoManage bool) error {
 	if !autoManage {
 		return nil
 	}
+	// Only bring down if Waker started it on launch or during this session
 	if m.startedByWaker {
-		if err := m.client.Down(ctx); err != nil {
-			return err
-		}
 		m.startedByWaker = false
+		return m.client.Down(ctx)
 	}
 	return nil
 }
 
-// StartedByWaker reports whether Tailscale was started by waker in this session.
+// StartedByWaker returns true if Tailscale was started by this Waker instance.
 func (m *Manager) StartedByWaker() bool {
 	return m.startedByWaker
 }
 
-// SetStartedByWaker overrides or updates the started-by-waker flag.
-func (m *Manager) SetStartedByWaker(v bool) {
-	m.startedByWaker = v
-}
-
-// WasUpOnLaunch reports whether Tailscale was already up when waker launched.
+// WasUpOnLaunch returns whether Tailscale was active when Waker launched.
 func (m *Manager) WasUpOnLaunch() bool {
 	return m.wasUpOnLaunch
 }
 
-// InitialChecked reports whether OnLaunch has run.
-func (m *Manager) InitialChecked() bool {
-	return m.initialChecked
+// SetStartedByWaker overrides the startedByWaker flag.
+func (m *Manager) SetStartedByWaker(v bool) {
+	m.startedByWaker = v
 }
 
 // Client returns the underlying Client.
@@ -255,17 +272,17 @@ func (m *Manager) Client() Client {
 	return m.client
 }
 
-// Status queries the current status through the Client.
+// Status returns the current status.
 func (m *Manager) Status(ctx context.Context) (*Status, error) {
 	return m.client.Status(ctx)
 }
 
-// Up manually brings Tailscale up through the Client.
+// Up manually starts Tailscale.
 func (m *Manager) Up(ctx context.Context) error {
 	return m.client.Up(ctx)
 }
 
-// Down manually brings Tailscale down through the Client.
+// Down manually stops Tailscale.
 func (m *Manager) Down(ctx context.Context) error {
 	return m.client.Down(ctx)
 }
