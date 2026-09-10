@@ -138,6 +138,28 @@ func TestConfigDirAndYmlFallback(t *testing.T) {
 }
 
 func TestConfigSettingsAutoTailscale(t *testing.T) {
+	// Test default when no settings block exists in YAML
+	defaultYaml := `
+version: 1
+hosts:
+  - name: default-host
+    mac: "11:22:33:44:55:66"
+`
+	tmpDir := t.TempDir()
+	defaultCfgPath := filepath.Join(tmpDir, "default_hosts.yaml")
+	if err := os.WriteFile(defaultCfgPath, []byte(defaultYaml), 0600); err != nil {
+		t.Fatalf("failed to write temp config: %v", err)
+	}
+
+	defCfg, err := Load(defaultCfgPath)
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if defCfg.Settings.AutoTailscale {
+		t.Errorf("expected AutoTailscale to default to false on first launch / unconfigured, got true")
+	}
+
+	// Test when explicitly set to true
 	yamlContent := `
 version: 1
 settings:
@@ -146,7 +168,6 @@ hosts:
   - name: my-host
     mac: "11:22:33:44:55:66"
 `
-	tmpDir := t.TempDir()
 	configPath := filepath.Join(tmpDir, "hosts.yaml")
 	if err := os.WriteFile(configPath, []byte(yamlContent), 0600); err != nil {
 		t.Fatalf("failed to write temp config: %v", err)
@@ -161,7 +182,7 @@ hosts:
 		t.Errorf("expected AutoTailscale to be true")
 	}
 
-	// Test saving and reloading
+	// Test saving false and reloading
 	cfg.Settings.AutoTailscale = false
 	if err := cfg.Save(configPath); err != nil {
 		t.Fatalf("Save failed: %v", err)
