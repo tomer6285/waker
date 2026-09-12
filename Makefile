@@ -23,4 +23,4 @@ clean:
 install: build
 	@mkdir -p ~/.local/bin
 	cp $(BUILD_DIR)/$(BINARY_NAME) ~/.local/bin/$(BINARY_NAME)
-	cp $(BUILD_DIR)/$(AGENT_BINARY) ~/.local/bin/$(AGENT_BINARY)
+
