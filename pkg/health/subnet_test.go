@@ -139,6 +139,18 @@ func TestCheckLocalSubnetWithInterfaces(t *testing.T) {
 	if !res.IsMatched || res.IsLocalTarget {
 		t.Errorf("expected public IP to be matched and not local target, got %+v", res)
 	}
+
+	// 8. Hostname resolution (localhost should resolve to 127.0.0.1 and match lo0)
+	res = CheckLocalSubnetWithInterfaces("localhost", getIfaces, getAddrs)
+	if !res.IsMatched || res.MatchedIface != "lo0" {
+		t.Errorf("expected localhost to match lo0, got %+v", res)
+	}
+
+	// 9. Unresolvable hostname should default to matched=true to allow network probe to decide
+	res = CheckLocalSubnetWithInterfaces("nonexistent-host-waker-test-fake.local", getIfaces, getAddrs)
+	if !res.IsMatched {
+		t.Errorf("expected unresolvable hostname to default to matched=true, got %+v", res)
+	}
 }
 
 func TestIsSubnetUnreachable(t *testing.T) {

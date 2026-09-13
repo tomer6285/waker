@@ -70,6 +70,23 @@ hosts:
 	if gaming.OnConnect.PeerID != "test1234" {
 		t.Errorf("expected peer_id test1234, got %s", gaming.OnConnect.PeerID)
 	}
+
+	// Test host with hostname instead of IP literal
+	hostnameYaml := `
+hosts:
+  - name: ts-host
+    mac: "11:22:33:44:55:66"
+    ip: "my-desktop.tailnet.ts.net"
+`
+	configPath2 := filepath.Join(tmpDir, "hosts_hostname.yaml")
+	_ = os.WriteFile(configPath2, []byte(hostnameYaml), 0600)
+	cfgHostname, err := Load(configPath2)
+	if err != nil {
+		t.Fatalf("Load with hostname failed: %v", err)
+	}
+	if cfgHostname.Hosts[0].IP != "my-desktop.tailnet.ts.net" {
+		t.Errorf("expected hostname preserved, got %s", cfgHostname.Hosts[0].IP)
+	}
 }
 
 func TestConfigInvalidMAC(t *testing.T) {
@@ -194,5 +211,56 @@ hosts:
 	}
 	if reloaded.Settings.AutoTailscale {
 		t.Errorf("expected AutoTailscale to be false after save/reload")
+	}
+}
+
+func TestHostConfigValidate(t *testing.T) {
+	// Valid host with IP
+	h1 := HostConfig{
+		Name: "desktop",
+		MAC:  "AA:BB:CC:DD:EE:FF",
+		IP:   "192.168.1.50",
+	}
+	if err := h1.Validate(); err != nil {
+		t.Fatalf("expected valid host with IP to pass validation, got: %v", err)
+	}
+
+	// Valid host with hostname
+	h2 := HostConfig{
+		Name: "media-server",
+		MAC:  "AA:BB:CC:DD:EE:FF",
+		IP:   "media-server.tailnet.ts.net",
+	}
+	if err := h2.Validate(); err != nil {
+		t.Fatalf("expected valid host with hostname to pass validation, got: %v", err)
+	}
+
+	// Valid host with local hostname
+	h3 := HostConfig{
+		Name: "living-room-pc",
+		MAC:  "AA:BB:CC:DD:EE:FF",
+		IP:   "desktop.local",
+	}
+	if err := h3.Validate(); err != nil {
+		t.Fatalf("expected valid host with .local hostname to pass validation, got: %v", err)
+	}
+
+	// Missing name / nickname
+	hBadName := HostConfig{
+		Name: "",
+		MAC:  "AA:BB:CC:DD:EE:FF",
+	}
+	if err := hBadName.Validate(); err == nil {
+		t.Fatal("expected error for empty nickname, got nil")
+	}
+
+	// Invalid hostname with spaces or special chars
+	hBadIP := HostConfig{
+		Name: "bad-host",
+		MAC:  "AA:BB:CC:DD:EE:FF",
+		IP:   "invalid host name",
+	}
+	if err := hBadIP.Validate(); err == nil {
+		t.Fatal("expected error for invalid IP/hostname with spaces, got nil")
 	}
 }

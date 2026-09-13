@@ -66,7 +66,7 @@ var (
 
 	dotOnline      = lipgloss.NewStyle().Foreground(lipgloss.Color("#A3BE8C")).Render("●")
 	dotOffline     = lipgloss.NewStyle().Foreground(lipgloss.Color("#4C566A")).Render("○")
-	dotUnreachable = lipgloss.NewStyle().Foreground(lipgloss.Color("#D08770")).Render("⊘")
+	dotUnreachable = lipgloss.NewStyle().Foreground(lipgloss.Color("#D08770")).Render("⊗")
 	dotWaking      = lipgloss.NewStyle().Foreground(lipgloss.Color("#EBCB8B")).Render("◌")
 	dotUnknown     = lipgloss.NewStyle().Foreground(lipgloss.Color("#616E88")).Render("?")
 
@@ -198,7 +198,7 @@ func (m *Model) initFormInputs(host *config.HostConfig) {
 	placeholders := []string{
 		"desktop",
 		"auto-detect or AA:BB:CC:DD:EE:FF",
-		"192.168.1.50",
+		"192.168.1.50 or hostname",
 		"255.255.255.255",
 		"",
 		"",
@@ -866,7 +866,7 @@ func (m *Model) parseFormHost() (config.HostConfig, error) {
 	sleepTarget := strings.TrimSpace(m.formInputs[6].Value())
 
 	if name == "" {
-		return config.HostConfig{}, fmt.Errorf("Host Name is required")
+		return config.HostConfig{}, fmt.Errorf("Nickname is required")
 	}
 	if mac == "" {
 		if ip == "" {
@@ -1435,9 +1435,9 @@ func (m Model) viewForm() string {
 	// 1. SECTION: Identity & Network
 	sectionTitle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#81A1C1")).Render("IDENTITY & NETWORK")
 	sb.WriteString(sectionTitle + "\n")
-	sb.WriteString(renderField("Host Name *", m.formInputs[0], m.formFocus == 0, "") + "\n")
+	sb.WriteString(renderField("Nickname *", m.formInputs[0], m.formFocus == 0, "") + "\n")
 	sb.WriteString(renderField("MAC Address", m.formInputs[1], m.formFocus == 1, "") + "\n")
-	sb.WriteString(renderField("IP Address", m.formInputs[2], m.formFocus == 2, "") + "\n")
+	sb.WriteString(renderField("IP / Hostname", m.formInputs[2], m.formFocus == 2, "") + "\n")
 	sb.WriteString(renderField("Broadcast IP", m.formInputs[3], m.formFocus == 3, "") + "\n")
 	sb.WriteString("\n")
 

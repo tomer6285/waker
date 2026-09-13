@@ -10,7 +10,7 @@ defaults:
 hosts:
   - name: desktop
     mac: AA:BB:CC:DD:EE:FF
-    ip: 127.0.0.1
+    ip: 127.0.0.1 # IP address or hostname / MagicDNS (e.g. desktop.tailnet.ts.net)
     broadcast: 127.0.0.1
     subnet_check: true # optional: set false if host is routed across subnets/VLANs
     ssh:

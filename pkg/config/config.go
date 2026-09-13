@@ -181,11 +181,11 @@ func (c *Config) Validate() error {
 	for i := range c.Hosts {
 		h := &c.Hosts[i]
 		if strings.TrimSpace(h.Name) == "" {
-			return fmt.Errorf("host #%d is missing a name", i+1)
+			return fmt.Errorf("host #%d is missing a nickname", i+1)
 		}
 		nameLower := strings.ToLower(h.Name)
 		if names[nameLower] {
-			return fmt.Errorf("duplicate host name %q", h.Name)
+			return fmt.Errorf("duplicate nickname %q", h.Name)
 		}
 		names[nameLower] = true
 
@@ -199,8 +199,12 @@ func (c *Config) Validate() error {
 		h.MAC = hw.String()
 
 		if h.IP != "" {
-			if parsedIP := net.ParseIP(h.IP); parsedIP == nil {
-				return fmt.Errorf("host %q has invalid IP address: %s", h.Name, h.IP)
+			trimmedIP := strings.TrimSpace(h.IP)
+			if parsedIP := net.ParseIP(trimmedIP); parsedIP == nil {
+				// If not a valid IP literal, verify it is a plausible hostname/FQDN
+				if strings.ContainsAny(trimmedIP, "/ :") {
+					return fmt.Errorf("host %q has invalid IP or hostname: %s", h.Name, h.IP)
+				}
 			}
 		}
 
@@ -345,7 +349,7 @@ func (c *Config) DeleteHost(name string) bool {
 // Validate single HostConfig
 func (h *HostConfig) Validate() error {
 	if strings.TrimSpace(h.Name) == "" {
-		return errors.New("host name cannot be empty")
+		return errors.New("nickname cannot be empty")
 	}
 	if h.MAC == "" {
 		return errors.New("MAC address is required")
@@ -357,8 +361,12 @@ func (h *HostConfig) Validate() error {
 	h.MAC = hw.String()
 
 	if h.IP != "" {
-		if parsedIP := net.ParseIP(h.IP); parsedIP == nil {
-			return fmt.Errorf("invalid IP address: %s", h.IP)
+		trimmedIP := strings.TrimSpace(h.IP)
+		if parsedIP := net.ParseIP(trimmedIP); parsedIP == nil {
+			// If not a valid IP literal, verify it is a plausible hostname/FQDN
+			if strings.ContainsAny(trimmedIP, "/ :") {
+				return fmt.Errorf("invalid IP or hostname: %s", h.IP)
+			}
 		}
 	}
 	return nil

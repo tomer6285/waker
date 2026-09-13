@@ -232,3 +232,60 @@ func TestHelpViewIncludesSettings(t *testing.T) {
 		t.Errorf("expected help view to contain settings keybinding description")
 	}
 }
+
+func TestFormNicknameAndHostname(t *testing.T) {
+	m, _, cfgPath := setupTestModel(t, false)
+
+	// Press 'a' to open Add Host form
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	m = updated.(Model)
+	if m.mode != ModeForm {
+		t.Fatalf("expected ModeForm after pressing 'a', got %v", m.mode)
+	}
+
+	// Check form render output contains "Nickname *"
+	view := m.View()
+	if !strings.Contains(view, "Nickname *") {
+		t.Errorf("expected form view to contain 'Nickname *', got: %s", view)
+	}
+	if !strings.Contains(view, "IP / Hostname") {
+		t.Errorf("expected form view to contain 'IP / Hostname', got: %s", view)
+	}
+
+	// Attempt submitting with empty name -> verify error "Nickname is required"
+	m.formFocus = 9 // Save button
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(Model)
+	if m.mode != ModeForm {
+		t.Fatalf("expected to remain in ModeForm on validation error")
+	}
+	if m.formErrorMsg != "Nickname is required" {
+		t.Errorf("expected 'Nickname is required', got %q", m.formErrorMsg)
+	}
+
+	// Set valid nickname, MAC, and hostname in IP/Hostname field
+	m.formInputs[0].SetValue("my-pc")
+	m.formInputs[1].SetValue("11:22:33:44:55:66")
+	m.formInputs[2].SetValue("my-pc.tailnet.ts.net")
+
+	// Submit form
+	m.formFocus = 9 // Save button
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(Model)
+	if m.mode != ModeList {
+		t.Fatalf("expected ModeList after successful save, got %v (error: %s)", m.mode, m.formErrorMsg)
+	}
+
+	// Verify host was saved with hostname in config
+	reloaded, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatalf("failed to reload config: %v", err)
+	}
+	savedHost, err := reloaded.FindHost("my-pc")
+	if err != nil {
+		t.Fatalf("FindHost my-pc failed: %v", err)
+	}
+	if savedHost.IP != "my-pc.tailnet.ts.net" {
+		t.Errorf("expected saved hostname 'my-pc.tailnet.ts.net', got %s", savedHost.IP)
+	}
+}

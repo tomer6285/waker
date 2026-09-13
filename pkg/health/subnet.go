@@ -67,9 +67,25 @@ func CheckLocalSubnetWithInterfaces(
 
 	ip := net.ParseIP(trimmed)
 	if ip == nil {
-		return SubnetMatchResult{
-			IsMatched: true,
-			Reason:    fmt.Sprintf("invalid IP address %q", trimmed),
+		// Attempt DNS resolution (supports MagicDNS, local hostnames, and FQDNs)
+		ips, err := net.LookupIP(trimmed)
+		if err == nil && len(ips) > 0 {
+			// Find first IPv4 if available, else first IP
+			for _, candidate := range ips {
+				if candidate.To4() != nil {
+					ip = candidate
+					break
+				}
+			}
+			if ip == nil {
+				ip = ips[0]
+			}
+		} else {
+			// Unresolvable hostname: assume matched so we don't prematurely block probing
+			return SubnetMatchResult{
+				IsMatched: true,
+				Reason:    fmt.Sprintf("hostname %q could not be resolved via DNS, deferring to probe", trimmed),
+			}
 		}
 	}
 

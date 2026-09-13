@@ -214,9 +214,24 @@ func SendWithRelay(ctx context.Context, relay *RelayConfig, macStr string, opts 
 // ResolveMACFromIP attempts to look up the hardware MAC address for a given IP address
 // using the OS ARP cache. It sends a quick ping probe to ensure the ARP table is populated.
 func ResolveMACFromIP(ipStr string) (string, error) {
-	ip := net.ParseIP(strings.TrimSpace(ipStr))
+	trimmed := strings.TrimSpace(ipStr)
+	ip := net.ParseIP(trimmed)
 	if ip == nil {
-		return "", fmt.Errorf("invalid IP address: %s", ipStr)
+		ips, err := net.LookupIP(trimmed)
+		if err == nil && len(ips) > 0 {
+			for _, candidate := range ips {
+				if candidate.To4() != nil {
+					ip = candidate
+					break
+				}
+			}
+			if ip == nil {
+				ip = ips[0]
+			}
+		}
+	}
+	if ip == nil {
+		return "", fmt.Errorf("invalid IP or unresolvable hostname: %s", ipStr)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)

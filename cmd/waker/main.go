@@ -474,7 +474,7 @@ func init() {
 	sleepCmd.Flags().Bool("wait", false, "Wait until host goes offline")
 
 	addCmd.Flags().String("mac", "", "Host MAC address (e.g. AA:BB:CC:DD:EE:FF)")
-	addCmd.Flags().String("ip", "", "Host IP address (e.g. 192.168.1.100)")
+	addCmd.Flags().String("ip", "", "Host IP address or hostname (e.g. 192.168.1.100 or desktop.tailnet.ts.net)")
 	addCmd.Flags().String("broadcast", "", "Custom broadcast IP (optional)")
 	addCmd.Flags().String("ssh-user", "", "SSH username for connect/sleep")
 	addCmd.Flags().Int("ssh-port", 22, "SSH port")
