@@ -83,18 +83,18 @@ var (
 			Padding(0, 1)
 
 	inactiveTabStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#7B88A1")).
-			Background(lipgloss.Color("#2E3440")).
-			Padding(0, 1)
+				Foreground(lipgloss.Color("#7B88A1")).
+				Background(lipgloss.Color("#2E3440")).
+				Padding(0, 1)
 
 	formLabelStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#D8DEE9")).
 			Width(22)
 
 	formFocusLabelStyle = lipgloss.NewStyle().
-			Bold(true).
-			Foreground(lipgloss.Color("#88C0D0")).
-			Width(22)
+				Bold(true).
+				Foreground(lipgloss.Color("#88C0D0")).
+				Width(22)
 
 	hintStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#616E88"))
@@ -730,46 +730,6 @@ func (m *Model) handleFormKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.applyFormFocus()
 		return *m, nil
 
-	case "left", "h":
-		if m.formFocus == 4 { // Connect Type
-			if m.formConnTypeIdx > 0 {
-				m.formConnTypeIdx--
-				m.updateDynamicPlaceholders()
-			}
-			return *m, nil
-		}
-		if m.formFocus == 7 { // Sleep Type
-			if m.formSleepIdx > 0 {
-				m.formSleepIdx--
-				m.updateDynamicPlaceholders()
-			}
-			return *m, nil
-		}
-		if m.formFocus == 10 { // Cancel button -> Save button
-			m.formFocus = 9
-			return *m, nil
-		}
-
-	case "right", "l":
-		if m.formFocus == 4 { // Connect Type
-			if m.formConnTypeIdx < len(connTypes)-1 {
-				m.formConnTypeIdx++
-				m.updateDynamicPlaceholders()
-			}
-			return *m, nil
-		}
-		if m.formFocus == 7 { // Sleep Type
-			if m.formSleepIdx < len(sleepTypes)-1 {
-				m.formSleepIdx++
-				m.updateDynamicPlaceholders()
-			}
-			return *m, nil
-		}
-		if m.formFocus == 9 { // Save button -> Cancel button
-			m.formFocus = 10
-			return *m, nil
-		}
-
 	case "enter":
 		if m.formFocus == 10 {
 			m.mode = ModeList
@@ -784,18 +744,64 @@ func (m *Model) handleFormKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.formFocus = (m.formFocus + 1) % totalFocusable
 		m.applyFormFocus()
 		return *m, nil
-
-	default:
-		inputIdx := m.currentInputIndex()
-		if inputIdx >= 0 && inputIdx < len(m.formInputs) {
-			var cmd tea.Cmd
-			m.formInputs[inputIdx], cmd = m.formInputs[inputIdx].Update(msg)
-			return *m, cmd
-		}
 	}
+
+	// For selector and button controls (non-input fields), support left/right and h/l navigation
+	if m.currentInputIndex() == -1 {
+		switch msg.String() {
+		case "left", "h":
+			if m.formFocus == 4 { // Connect Type
+				if m.formConnTypeIdx > 0 {
+					m.formConnTypeIdx--
+					m.updateDynamicPlaceholders()
+				}
+				return *m, nil
+			}
+			if m.formFocus == 7 { // Sleep Type
+				if m.formSleepIdx > 0 {
+					m.formSleepIdx--
+					m.updateDynamicPlaceholders()
+				}
+				return *m, nil
+			}
+			if m.formFocus == 10 { // Cancel button -> Save button
+				m.formFocus = 9
+				return *m, nil
+			}
+
+		case "right", "l":
+			if m.formFocus == 4 { // Connect Type
+				if m.formConnTypeIdx < len(connTypes)-1 {
+					m.formConnTypeIdx++
+					m.updateDynamicPlaceholders()
+				}
+				return *m, nil
+			}
+			if m.formFocus == 7 { // Sleep Type
+				if m.formSleepIdx < len(sleepTypes)-1 {
+					m.formSleepIdx++
+					m.updateDynamicPlaceholders()
+				}
+				return *m, nil
+			}
+			if m.formFocus == 9 { // Save button -> Cancel button
+				m.formFocus = 10
+				return *m, nil
+			}
+		}
+		return *m, nil
+	}
+
+	// For text inputs, delegate all remaining keys (including h, l, and arrow keys) to the focused input
+	inputIdx := m.currentInputIndex()
+	if inputIdx >= 0 && inputIdx < len(m.formInputs) {
+		var cmd tea.Cmd
+		m.formInputs[inputIdx], cmd = m.formInputs[inputIdx].Update(msg)
+		return *m, cmd
+	}
+
 	return *m, nil
 }
-
 func (m *Model) currentInputIndex() int {
 	switch m.formFocus {
 	case 0:

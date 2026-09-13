@@ -289,3 +289,82 @@ func TestFormNicknameAndHostname(t *testing.T) {
 		t.Errorf("expected saved hostname 'my-pc.tailnet.ts.net', got %s", savedHost.IP)
 	}
 }
+
+func TestFormHAndLKeysInput(t *testing.T) {
+	m, _, _ := setupTestModel(t, false)
+
+	// Press 'a' to open Add Host form
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	m = updated.(Model)
+	if m.mode != ModeForm {
+		t.Fatalf("expected ModeForm, got %v", m.mode)
+	}
+
+	// m.formFocus is 0 (Nickname)
+	// Type "hello" into Nickname
+	for _, r := range "hello" {
+		updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m = updated.(Model)
+	}
+	if got := m.formInputs[0].Value(); got != "hello" {
+		t.Errorf("expected Nickname field to be 'hello', got %q", got)
+	}
+
+	// Move focus to IP / Hostname (focus 2)
+	m.formFocus = 2
+	m.applyFormFocus()
+
+	// Type "host.local" into Hostname
+	for _, r := range "host.local" {
+		updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m = updated.(Model)
+	}
+	if got := m.formInputs[2].Value(); got != "host.local" {
+		t.Errorf("expected Hostname field to be 'host.local', got %q", got)
+	}
+
+	// Test cursor navigation (left/right) in input field
+	// Current cursor in Hostname is at position 10 (end)
+	// Press KeyLeft twice
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyLeft})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyLeft})
+	m = updated.(Model)
+	if pos := m.formInputs[2].Position(); pos != 8 {
+		t.Errorf("expected cursor position 8 after 2 KeyLeft, got %d", pos)
+	}
+
+	// Test selector navigation with h/l when not on text input
+	// Focus 4: Connect Type
+	m.formFocus = 4
+	m.applyFormFocus()
+	m.formConnTypeIdx = 0
+	// Press 'l' -> should increment formConnTypeIdx
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'l'}})
+	m = updated.(Model)
+	if m.formConnTypeIdx != 1 {
+		t.Errorf("expected formConnTypeIdx == 1 after 'l', got %d", m.formConnTypeIdx)
+	}
+	// Press 'h' -> should decrement formConnTypeIdx
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'h'}})
+	m = updated.(Model)
+	if m.formConnTypeIdx != 0 {
+		t.Errorf("expected formConnTypeIdx == 0 after 'h', got %d", m.formConnTypeIdx)
+	}
+
+	// Test buttons navigation with h/l
+	m.formFocus = 9 // Save button
+	m.applyFormFocus()
+	// Press 'l' -> should move to Cancel button (10)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'l'}})
+	m = updated.(Model)
+	if m.formFocus != 10 {
+		t.Errorf("expected formFocus == 10 after 'l' on Save button, got %d", m.formFocus)
+	}
+	// Press 'h' -> should move back to Save button (9)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'h'}})
+	m = updated.(Model)
+	if m.formFocus != 9 {
+		t.Errorf("expected formFocus == 9 after 'h' on Cancel button, got %d", m.formFocus)
+	}
+}
