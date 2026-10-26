@@ -141,7 +141,7 @@ func (c *CLIClient) IsUp(ctx context.Context) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	return st.IsUp, nil
+	return st.IsUp, st.Err
 }
 
 // Up runs `tailscale up`.
@@ -191,7 +191,7 @@ func (c *CLIClient) Down(ctx context.Context) error {
 	return nil
 }
 
-// Manager orchestrates Tailscale lifecycle (launch and quit actions) based on configuration.
+// Manager ensures Tailscale is connected and supports explicit connect/disconnect actions.
 type Manager struct {
 	client         Client
 	startedByWaker bool
@@ -222,7 +222,7 @@ func (m *Manager) OnLaunch(ctx context.Context, autoManage bool) (bool, error) {
 	m.initialChecked = true
 	isUp, err := m.client.IsUp(ctx)
 	if err != nil {
-		isUp = false
+		return false, fmt.Errorf("cannot read Tailscale status: %w", err)
 	}
 	m.wasUpOnLaunch = isUp
 	if !isUp {
@@ -237,18 +237,9 @@ func (m *Manager) OnLaunch(ctx context.Context, autoManage bool) (bool, error) {
 	return false, nil
 }
 
-// OnQuit executes when waker quits.
-// If Tailscale was started by waker during this session, it brings Tailscale down.
-// If Tailscale was already up prior to launch, it leaves it running.
+// OnQuit leaves Tailscale running: external SSH, Parsec, and mount sessions may
+// still depend on it. Disconnect only on an explicit user action via Down.
 func (m *Manager) OnQuit(ctx context.Context, autoManage bool) error {
-	if !autoManage {
-		return nil
-	}
-	// Only bring down if Waker started it on launch or during this session
-	if m.startedByWaker {
-		m.startedByWaker = false
-		return m.client.Down(ctx)
-	}
 	return nil
 }
 

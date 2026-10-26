@@ -33,32 +33,32 @@ type ConnectAction struct {
 }
 
 type SleepAction struct {
-	Type     string `yaml:"type"`               // ssh, agent, custom
-	Port     int    `yaml:"port,omitempty"`     // for agent (default 9876)
-	TokenEnv string `yaml:"token_env,omitempty"`// environment variable storing token
-	Token    string `yaml:"token,omitempty"`    // static token fallback
-	Run      string `yaml:"run,omitempty"`      // for custom sleep command
+	Type     string `yaml:"type"`                // ssh, agent, custom
+	Port     int    `yaml:"port,omitempty"`      // for agent (default 9876)
+	TokenEnv string `yaml:"token_env,omitempty"` // environment variable storing token
+	Token    string `yaml:"token,omitempty"`     // static token fallback
+	Run      string `yaml:"run,omitempty"`       // for custom sleep command
 }
 
 type HostConfig struct {
-	Name        string            `yaml:"name"`
-	MAC         string            `yaml:"mac"`
-	IP          string            `yaml:"ip,omitempty"`
-	SubnetCheck *bool             `yaml:"subnet_check,omitempty"` // verify local subnet match before probing (default true)
-	Broadcast   string            `yaml:"broadcast,omitempty"`
-	Port        int               `yaml:"port,omitempty"`
-	Interface   string            `yaml:"interface,omitempty"`
-	Relay       *wol.RelayConfig  `yaml:"relay,omitempty"`
-	SSH         *SSHConfig        `yaml:"ssh,omitempty"`
-	Checks      []CheckConfig     `yaml:"checks,omitempty"`
-	OnConnect   *ConnectAction    `yaml:"on_connect,omitempty"`
-	OnSleep     *SleepAction      `yaml:"on_sleep,omitempty"`
+	Name        string           `yaml:"name"`
+	MAC         string           `yaml:"mac"`
+	IP          string           `yaml:"ip,omitempty"`
+	SubnetCheck *bool            `yaml:"subnet_check,omitempty"` // opt-in local-only guard; routed/Tailscale hosts should leave false
+	Broadcast   string           `yaml:"broadcast,omitempty"`
+	Port        int              `yaml:"port,omitempty"`
+	Interface   string           `yaml:"interface,omitempty"`
+	Relay       *wol.RelayConfig `yaml:"relay,omitempty"`
+	SSH         *SSHConfig       `yaml:"ssh,omitempty"`
+	Checks      []CheckConfig    `yaml:"checks,omitempty"`
+	OnConnect   *ConnectAction   `yaml:"on_connect,omitempty"`
+	OnSleep     *SleepAction     `yaml:"on_sleep,omitempty"`
 }
 
 // ShouldCheckSubnet returns whether local subnet matching is enabled for this host.
 func (h *HostConfig) ShouldCheckSubnet() bool {
 	if h.SubnetCheck == nil {
-		return true
+		return false
 	}
 	return *h.SubnetCheck
 }
@@ -68,13 +68,13 @@ type SettingsConfig struct {
 }
 
 type DefaultsConfig struct {
-	Broadcast     string            `yaml:"broadcast,omitempty"`
-	WOLPort       int               `yaml:"wol_port,omitempty"`
-	Timeout       time.Duration     `yaml:"timeout,omitempty"`
-	PollInterval  time.Duration     `yaml:"poll_interval,omitempty"`
-	ProbeTimeout  time.Duration     `yaml:"probe_timeout,omitempty"`
-	Relay         *wol.RelayConfig  `yaml:"relay,omitempty"`
-	SSHOptions    []string          `yaml:"ssh_options,omitempty"`
+	Broadcast    string           `yaml:"broadcast,omitempty"`
+	WOLPort      int              `yaml:"wol_port,omitempty"`
+	Timeout      time.Duration    `yaml:"timeout,omitempty"`
+	PollInterval time.Duration    `yaml:"poll_interval,omitempty"`
+	ProbeTimeout time.Duration    `yaml:"probe_timeout,omitempty"`
+	Relay        *wol.RelayConfig `yaml:"relay,omitempty"`
+	SSHOptions   []string         `yaml:"ssh_options,omitempty"`
 }
 
 type Config struct {
@@ -151,23 +151,6 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("failed to parse yaml config: %w", err)
 	}
 
-	// Apply defaults and validate
-	if cfg.Defaults.Broadcast == "" {
-		cfg.Defaults.Broadcast = "255.255.255.255"
-	}
-	if cfg.Defaults.WOLPort == 0 {
-		cfg.Defaults.WOLPort = 9
-	}
-	if cfg.Defaults.Timeout == 0 {
-		cfg.Defaults.Timeout = 120 * time.Second
-	}
-	if cfg.Defaults.PollInterval == 0 {
-		cfg.Defaults.PollInterval = 15 * time.Second
-	}
-	if cfg.Defaults.ProbeTimeout == 0 {
-		cfg.Defaults.ProbeTimeout = 2 * time.Second
-	}
-
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
@@ -177,6 +160,32 @@ func Load(path string) (*Config, error) {
 
 // Validate validates hosts and configuration semantics.
 func (c *Config) Validate() error {
+	// Apply defaults before validating both loaded and newly edited hosts.
+	if c.Defaults.Broadcast == "" {
+		c.Defaults.Broadcast = "255.255.255.255"
+	}
+	if c.Defaults.WOLPort == 0 {
+		c.Defaults.WOLPort = 9
+	}
+	if c.Defaults.Timeout == 0 {
+		c.Defaults.Timeout = 120 * time.Second
+	}
+	if c.Defaults.PollInterval == 0 {
+		c.Defaults.PollInterval = 15 * time.Second
+	}
+	if c.Defaults.ProbeTimeout == 0 {
+		c.Defaults.ProbeTimeout = 2 * time.Second
+	}
+
+	if c.Defaults.Timeout < 0 || c.Defaults.PollInterval < 0 || c.Defaults.ProbeTimeout < 0 {
+		return errors.New("timeouts and polling intervals must be positive")
+	}
+
+	if c.Defaults.Relay != nil {
+		if err := c.Defaults.Relay.Validate(); err != nil {
+			return fmt.Errorf("default relay: %w", err)
+		}
+	}
 	names := make(map[string]bool)
 	for i := range c.Hosts {
 		h := &c.Hosts[i]
@@ -213,6 +222,18 @@ func (c *Config) Validate() error {
 		}
 		if h.Port == 0 {
 			h.Port = c.Defaults.WOLPort
+		}
+
+		if h.Relay != nil {
+			if err := h.Relay.Validate(); err != nil {
+				return fmt.Errorf("host %q relay: %w", h.Name, err)
+			}
+		}
+		if h.Port < 1 || h.Port > 65535 {
+			return fmt.Errorf("host %q: invalid WOL port", h.Name)
+		}
+		if ip := net.ParseIP(h.Broadcast); ip == nil || ip.To4() == nil {
+			return fmt.Errorf("host %q: broadcast must be an IPv4 address", h.Name)
 		}
 
 		// Check defaults for on_connect if empty
@@ -325,13 +346,23 @@ func (c *Config) UpsertHost(host HostConfig) error {
 	if err := host.Validate(); err != nil {
 		return err
 	}
-	for i, h := range c.Hosts {
+	candidate := *c
+	candidate.Hosts = append([]HostConfig(nil), c.Hosts...)
+	found := false
+	for i, h := range candidate.Hosts {
 		if strings.EqualFold(h.Name, host.Name) {
-			c.Hosts[i] = host
-			return nil
+			candidate.Hosts[i] = host
+			found = true
+			break
 		}
 	}
-	c.Hosts = append(c.Hosts, host)
+	if !found {
+		candidate.Hosts = append(candidate.Hosts, host)
+	}
+	if err := candidate.Validate(); err != nil {
+		return err
+	}
+	*c = candidate
 	return nil
 }
 

@@ -85,8 +85,8 @@ func (r *Runner) connectSSH(ctx context.Context, host *config.HostConfig, extraA
 	if host.SSH != nil && host.SSH.User != "" {
 		target = fmt.Sprintf("%s@%s", host.SSH.User, target)
 	}
-	args = append(args, target)
 	args = append(args, extraArgs...)
+	args = append(args, "--", target)
 
 	fullArgs := append([]string{"ssh"}, args...)
 

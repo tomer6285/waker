@@ -82,6 +82,20 @@ func CheckHost(ctx context.Context, host *config.HostConfig, timeout time.Durati
 	return results
 }
 
+// CheckReady waits for the service the connect action needs. A responding ping
+// alone does not mean SSH has started after resume.
+func CheckReady(ctx context.Context, host *config.HostConfig, timeout time.Duration) []CheckResult {
+	target := *host
+	if host.OnConnect == nil || host.OnConnect.Type == "" || host.OnConnect.Type == "ssh" {
+		port := 22
+		if host.SSH != nil && host.SSH.Port != 0 {
+			port = host.SSH.Port
+		}
+		target.Checks = []config.CheckConfig{{Type: "tcp", Port: port}}
+	}
+	return CheckHost(ctx, &target, timeout)
+}
+
 // IsReachable returns true if any check succeeded.
 func IsReachable(results []CheckResult) (bool, time.Duration) {
 	var minLatency time.Duration

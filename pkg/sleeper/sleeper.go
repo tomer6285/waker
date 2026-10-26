@@ -3,7 +3,9 @@ package sleeper
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -62,7 +64,10 @@ func (s *Sleeper) sleepAgent(ctx context.Context, host *config.HostConfig, actio
 		}
 	}
 
-	url := fmt.Sprintf("http://%s:%d/sleep", host.IP, port)
+	if token == "" {
+		return fmt.Errorf("agent sleep requires a token; set on_sleep.token_env and export it on the client")
+	}
+	url := "http://" + net.JoinHostPort(host.IP, strconv.Itoa(port)) + "/sleep"
 	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer([]byte(`{}`)))
 	if err != nil {
 		return fmt.Errorf("failed to create sleep request: %w", err)
@@ -114,10 +119,13 @@ func (s *Sleeper) sleepCustom(ctx context.Context, host *config.HostConfig, acti
 // macOS: osascript -e 'tell application "System Events" to sleep'
 // Windows OpenSSH: rundll32.exe powrprof.dll,SetSuspendState 0,1,0
 const compositeSleepCommand = `if command -v systemctl >/dev/null 2>&1; then
+  echo WAKER_SUSPEND_REQUESTED
   systemctl suspend
 elif command -v osascript >/dev/null 2>&1; then
+  echo WAKER_SUSPEND_REQUESTED
   osascript -e 'tell application "System Events" to sleep'
 elif command -v rundll32.exe >/dev/null 2>&1; then
+  echo WAKER_SUSPEND_REQUESTED
   rundll32.exe powrprof.dll,SetSuspendState 0,1,0
 else
   echo "Unsupported sleep system" && exit 1
@@ -147,12 +155,28 @@ func (s *Sleeper) sleepSSH(ctx context.Context, host *config.HostConfig) error {
 	if host.SSH != nil && host.SSH.User != "" {
 		target = fmt.Sprintf("%s@%s", host.SSH.User, target)
 	}
-	args = append(args, target, compositeSleepCommand)
+	args = append(args, "--", target, compositeSleepCommand)
 
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
 	cmd := exec.CommandContext(ctx, sshPath, args...)
-	// Note: When a remote host suspends, SSH connection may terminate abruptly or return 255.
-	// We capture output, but don't treat immediate connection drop as fatal error.
-	_ = cmd.Run()
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		// A verified remote command may lose SSH as the machine suspends. Require
+		// its acknowledgement and an offline probe; authentication errors never qualify.
+		var exitErr *exec.ExitError
+		dropped := errors.As(err, &exitErr) && exitErr.ExitCode() == 255
+		if strings.Contains(string(out), "WAKER_SUSPEND_REQUESTED") && (dropped || ctx.Err() != nil) {
+			probeCtx, probeCancel := context.WithTimeout(context.Background(), 2*time.Second)
+			checks := health.CheckHost(probeCtx, host, time.Second)
+			probeCancel()
+			reachable, _ := health.IsReachable(checks)
+			if len(checks) > 0 && !reachable && !health.IsSubnetUnreachable(checks) {
+				return nil
+			}
+		}
+		return fmt.Errorf("SSH sleep on %s failed: %s: %w (if the host suspended before SSH replied, verify its status)", target, strings.TrimSpace(string(out)), err)
+	}
 	return nil
 }
 
@@ -172,6 +196,12 @@ func WaitForOffline(ctx context.Context, host *config.HostConfig, timeout time.D
 		case <-ticker.C:
 			res := health.CheckHost(ctx, host, 1*time.Second)
 			reachable, _ := health.IsReachable(res)
+			if health.IsSubnetUnreachable(res) {
+				return fmt.Errorf("cannot confirm sleep: network to %s is unreachable", host.Name)
+			}
+			if len(res) == 0 {
+				return fmt.Errorf("cannot confirm sleep: no health checks for %s", host.Name)
+			}
 			if !reachable {
 				// Machine is now offline!
 				return nil

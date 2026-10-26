@@ -12,6 +12,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/tomer/waker/pkg/actions"
 	"github.com/tomer/waker/pkg/config"
+	"github.com/tomer/waker/pkg/health"
 	"github.com/tomer/waker/pkg/presence"
 	"github.com/tomer/waker/pkg/sleeper"
 	"github.com/tomer/waker/pkg/store"
@@ -30,38 +31,18 @@ var rootCmd = &cobra.Command{
 	Short: "Wake-on-LAN manager with TUI & CLI to wake, monitor, and connect to hosts",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		// Default action without subcommands launches TUI
-		cfg, err := loadOrCreateConfig()
+		cfg, err := loadCommandConfig(cmd)
 		if err != nil {
 			return err
 		}
 		st, _ := store.LoadStore("")
 
 		tsMgr := tailscale.NewManager()
-		var tsBroughtUp bool
-		var tsLaunchErr error
-		if cfg.Settings.AutoTailscale {
-			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-			tsBroughtUp, tsLaunchErr = tsMgr.OnLaunch(ctx, cfg.Settings.AutoTailscale)
-			cancel()
-		}
-
-		defer func() {
-			if cfg.Settings.AutoTailscale {
-				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-				_ = tsMgr.OnQuit(ctx, cfg.Settings.AutoTailscale)
-				cancel()
-			}
-		}()
 
 		poller := presence.NewPoller(cfg, st)
-		poller.PollOnce(context.Background())
+		poller.PollOnce(cmd.Context())
 
 		model := tui.NewModelWithTailscale(cfg, st, poller, cfgFile, tsMgr)
-		if tsBroughtUp {
-			model.AddLog("Tailscale connected on launch ✓")
-		} else if tsLaunchErr != nil {
-			model.AddLog(fmt.Sprintf("Tailscale launch failed: %v", tsLaunchErr))
-		}
 		p := tea.NewProgram(model, tea.WithAltScreen())
 		_, err = p.Run()
 		return err
@@ -89,11 +70,53 @@ func loadOrCreateConfig() (*config.Config, error) {
 			},
 			Hosts: []config.HostConfig{},
 		}
-		_ = starter.Save(path)
+		if err := starter.Save(path); err != nil {
+			return nil, err
+		}
 		return starter, nil
 	}
 
 	return config.Load(path)
+}
+
+// Auto-start applies to every network command. Keep the tunnel running after
+// return: SSH exec and detached Parsec/mount/game clients still depend on it.
+var newTailscaleManager = tailscale.NewManager
+
+func loadCommandConfig(cmd *cobra.Command) (*config.Config, error) {
+	cfg, err := loadOrCreateConfig()
+	if err != nil {
+		return nil, err
+	}
+	dryRun, _ := cmd.Flags().GetBool("dry-run")
+	if cfg.Settings.AutoTailscale && cmd.Name() != "add" && !dryRun {
+		ctx, cancel := context.WithTimeout(cmd.Context(), 20*time.Second)
+		defer cancel()
+		if _, err := newTailscaleManager().OnLaunch(ctx, true); err != nil {
+			return nil, fmt.Errorf("Tailscale startup failed: %w", err)
+		}
+	}
+	return cfg, nil
+}
+
+func wakeHost(cmd *cobra.Command, cfg *config.Config, host *config.HostConfig) error {
+	relay := host.Relay
+	if relay == nil {
+		relay = cfg.Defaults.Relay
+	}
+	if cmd.Flags().Changed("relay") {
+		name, _ := cmd.Flags().GetString("relay")
+		relay = &wol.RelayConfig{Host: name}
+	}
+	broadcast := host.Broadcast
+	port := host.Port
+	if cmd.Flags().Changed("broadcast") {
+		broadcast, _ = cmd.Flags().GetString("broadcast")
+	}
+	if cmd.Flags().Changed("port") {
+		port, _ = cmd.Flags().GetInt("port")
+	}
+	return wol.SendWithRelay(cmd.Context(), relay, host.MAC, wol.Options{BroadcastIP: broadcast, Port: port, IfaceName: host.Interface})
 }
 
 // Subcommands
@@ -102,33 +125,21 @@ var listCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List all configured hosts and their status",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		cfg, err := loadOrCreateConfig()
+		cfg, err := loadCommandConfig(cmd)
 		if err != nil {
 			return err
 		}
 		st, _ := store.LoadStore("")
 
-		tsMgr := tailscale.NewManager()
-		if cfg.Settings.AutoTailscale {
-			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-			_, _ = tsMgr.OnLaunch(ctx, cfg.Settings.AutoTailscale)
-			cancel()
-			defer func() {
-				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-				_ = tsMgr.OnQuit(ctx, cfg.Settings.AutoTailscale)
-				cancel()
-			}()
-		}
-
 		poller := presence.NewPoller(cfg, st)
-		statuses := poller.PollOnce(context.Background())
+		statuses := poller.PollOnce(cmd.Context())
 
 		watch, _ := cmd.Flags().GetBool("watch")
 		if watch {
 			for {
 				printList(cfg, statuses)
 				time.Sleep(cfg.Defaults.PollInterval)
-				statuses = poller.PollOnce(context.Background())
+				statuses = poller.PollOnce(cmd.Context())
 				fmt.Print("\033[H\033[2J") // Clear screen
 			}
 		}
@@ -175,7 +186,7 @@ var statusCmd = &cobra.Command{
 	Short: "Show status of a specific host",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		cfg, err := loadOrCreateConfig()
+		cfg, err := loadCommandConfig(cmd)
 		if err != nil {
 			return err
 		}
@@ -189,7 +200,7 @@ var statusCmd = &cobra.Command{
 		poller := presence.NewPoller(cfg, st)
 
 		for {
-			info := poller.ProbeOne(context.Background(), host)
+			info := poller.ProbeOne(cmd.Context(), host)
 			if jsonOut {
 				enc := json.NewEncoder(os.Stdout)
 				enc.SetIndent("", "  ")
@@ -223,7 +234,7 @@ var wakeCmd = &cobra.Command{
 	Short: "Send Wake-on-LAN magic packet to a host",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		cfg, err := loadOrCreateConfig()
+		cfg, err := loadCommandConfig(cmd)
 		if err != nil {
 			return err
 		}
@@ -233,32 +244,24 @@ var wakeCmd = &cobra.Command{
 		}
 
 		fmt.Printf("Sending magic packet to %s (%s)...\n", host.Name, host.MAC)
-		opts := wol.Options{
-			BroadcastIP: host.Broadcast,
-			Port:        host.Port,
-			IfaceName:   host.Interface,
-		}
-
-		relay := host.Relay
-		if relay == nil {
-			relay = cfg.Defaults.Relay
-		}
-
-		err = wol.SendWithRelay(context.Background(), relay, host.MAC, opts)
-		if err != nil {
+		if err := wakeHost(cmd, cfg, host); err != nil {
 			return fmt.Errorf("failed to send WOL packet: %w", err)
 		}
-		fmt.Println("WOL packet sent successfully.")
+		fmt.Println("WOL packet sent; this does not confirm the host is awake.")
+		wait, _ := cmd.Flags().GetBool("wait")
+		if wait {
+			return waitForHostOnline(cmd.Context(), cfg, host, cfg.Defaults.Timeout)
+		}
 		return nil
 	},
 }
 
 var connectCmd = &cobra.Command{
-	Use:   "connect <name>",
+	Use:   "connect <name> [-- ssh-options...]",
 	Short: "Wake host, wait until it comes online, and execute post-wake action",
-	Args:  cobra.ExactArgs(1),
+	Args:  cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		cfg, err := loadOrCreateConfig()
+		cfg, err := loadCommandConfig(cmd)
 		if err != nil {
 			return err
 		}
@@ -274,60 +277,58 @@ var connectCmd = &cobra.Command{
 			timeoutFlag = cfg.Defaults.Timeout
 		}
 
-		// 1. Send WOL packet
-		opts := wol.Options{
-			BroadcastIP: host.Broadcast,
-			Port:        host.Port,
-			IfaceName:   host.Interface,
-		}
-		relay := host.Relay
-		if relay == nil {
-			relay = cfg.Defaults.Relay
-		}
-
-		fmt.Printf("Waking %s (%s)...\n", host.Name, host.MAC)
-		if err := wol.SendWithRelay(context.Background(), relay, host.MAC, opts); err != nil {
-			return fmt.Errorf("failed sending WOL: %w", err)
-		}
-
-		if nowait {
-			fmt.Println("Sent WOL. (--no-wait requested, exiting)")
+		if dryRun {
+			fmt.Printf("Host: %s (%s)\nConnect action: %+v\nSSH settings: %+v\n", host.Name, host.IP, host.OnConnect, host.SSH)
 			return nil
 		}
-
-		// 2. Wait for host to come online
-		fmt.Printf("Waiting up to %v for %s to come online...\n", timeoutFlag, host.Name)
-		if err := waitForHostOnline(context.Background(), cfg, host, timeoutFlag); err != nil {
+		reachable, _ := health.IsReachable(health.CheckHost(cmd.Context(), host, cfg.Defaults.ProbeTimeout))
+		if !reachable {
+			noWake, _ := cmd.Flags().GetBool("no-wake")
+			if noWake {
+				return fmt.Errorf("%s is offline and --no-wake was requested", host.Name)
+			}
+			fmt.Printf("Waking %s (%s)...\n", host.Name, host.MAC)
+			if err := wakeHost(cmd, cfg, host); err != nil {
+				return fmt.Errorf("failed sending WOL: %w", err)
+			}
+			if nowait {
+				fmt.Println("WOL sent; not waiting for readiness.")
+				return nil
+			}
+		}
+		fmt.Printf("Waiting up to %v for %s to be ready...\n", timeoutFlag, host.Name)
+		if err := waitForHostOnline(cmd.Context(), cfg, host, timeoutFlag); err != nil {
 			return err
 		}
-		fmt.Printf("Host %s is online!\n", host.Name)
+		fmt.Printf("Host %s is ready!\n", host.Name)
 
 		// 3. Execute connect action
 		runner := actions.NewRunner(nil, nil, nil)
 		extraArgs := args[1:]
-		return runner.Connect(context.Background(), host, extraArgs, dryRun)
+		return runner.Connect(cmd.Context(), host, extraArgs, true)
 	},
 }
 
 func waitForHostOnline(ctx context.Context, cfg *config.Config, host *config.HostConfig, timeout time.Duration) error {
+	if timeout <= 0 {
+		timeout = 120 * time.Second
+	}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-
-	st, _ := store.LoadStore("")
-	poller := presence.NewPoller(cfg, st)
 
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
 
+	var last []health.CheckResult
 	for {
+		last = health.CheckReady(ctx, host, cfg.Defaults.ProbeTimeout)
+		if ready, _ := health.IsReachable(last); ready {
+			return nil
+		}
 		select {
 		case <-ctx.Done():
-			return fmt.Errorf("timed out waiting for %s to become online", host.Name)
+			return fmt.Errorf("waiting for %s (%s): %w; last checks: %+v", host.Name, host.IP, ctx.Err(), last)
 		case <-ticker.C:
-			res := poller.ProbeOne(ctx, host)
-			if res.Status == presence.StatusOnline {
-				return nil
-			}
 		}
 	}
 }
@@ -337,7 +338,7 @@ var sleepCmd = &cobra.Command{
 	Short: "Put a host into sleep/suspend mode",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		cfg, err := loadOrCreateConfig()
+		cfg, err := loadCommandConfig(cmd)
 		if err != nil {
 			return err
 		}
@@ -348,7 +349,7 @@ var sleepCmd = &cobra.Command{
 
 		s := sleeper.NewSleeper()
 		fmt.Printf("Sending suspend command to %s...\n", host.Name)
-		if err := s.Sleep(context.Background(), host); err != nil {
+		if err := s.Sleep(cmd.Context(), host); err != nil {
 			return fmt.Errorf("sleep failed: %w", err)
 		}
 		fmt.Println("Suspend command issued successfully.")
@@ -356,7 +357,7 @@ var sleepCmd = &cobra.Command{
 		waitOffline, _ := cmd.Flags().GetBool("wait")
 		if waitOffline {
 			fmt.Print("Waiting for host to shut down / go offline...")
-			if err := sleeper.WaitForOffline(context.Background(), host, 60*time.Second); err != nil {
+			if err := sleeper.WaitForOffline(cmd.Context(), host, 60*time.Second); err != nil {
 				return err
 			}
 			fmt.Println(" Host is now offline.")
@@ -370,7 +371,7 @@ var pingCmd = &cobra.Command{
 	Short: "Run instant health checks / ping on a host",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		cfg, err := loadOrCreateConfig()
+		cfg, err := loadCommandConfig(cmd)
 		if err != nil {
 			return err
 		}
@@ -381,7 +382,7 @@ var pingCmd = &cobra.Command{
 
 		st, _ := store.LoadStore("")
 		poller := presence.NewPoller(cfg, st)
-		res := poller.ProbeOne(context.Background(), host)
+		res := poller.ProbeOne(cmd.Context(), host)
 
 		if jsonOut {
 			enc := json.NewEncoder(os.Stdout)
@@ -410,11 +411,14 @@ var addCmd = &cobra.Command{
 		sshUser, _ := cmd.Flags().GetString("ssh-user")
 		sshPort, _ := cmd.Flags().GetInt("ssh-port")
 
-		cfg, err := loadOrCreateConfig()
+		cfg, err := loadCommandConfig(cmd)
 		if err != nil {
 			return err
 		}
 
+		if existing, err := cfg.FindHost(name); err == nil && !cmd.Flags().Changed("mac") {
+			mac = existing.MAC
+		}
 		if mac == "" && ip != "" {
 			fmt.Printf("Auto-detecting MAC for IP %s...\n", ip)
 			detectedMAC, err := wol.ResolveMACFromIP(ip)
@@ -429,21 +433,39 @@ var addCmd = &cobra.Command{
 			return fmt.Errorf("--mac is required if IP cannot be resolved")
 		}
 
-		h := config.HostConfig{
-			Name:      name,
-			MAC:       mac,
-			IP:        ip,
-			Broadcast: bcast,
+		h := config.HostConfig{Name: name}
+		if existing, err := cfg.FindHost(name); err == nil {
+			h = *existing
+		}
+		h.MAC = mac
+		if cmd.Flags().Changed("ip") {
+			h.IP = ip
+		}
+		if cmd.Flags().Changed("broadcast") {
+			h.Broadcast = bcast
+		}
+		if cmd.Flags().Changed("relay") {
+			relayHost, _ := cmd.Flags().GetString("relay")
+			relayUser, _ := cmd.Flags().GetString("relay-user")
+			relayPort, _ := cmd.Flags().GetInt("relay-port")
+			h.Relay = &wol.RelayConfig{Host: relayHost, User: relayUser, Port: relayPort}
 		}
 
-		if sshUser != "" || sshPort != 0 {
+		if cmd.Flags().Changed("ssh-user") || cmd.Flags().Changed("ssh-port") {
 			if sshPort == 0 {
 				sshPort = 22
 			}
-			h.SSH = &config.SSHConfig{
-				User: sshUser,
-				Port: sshPort,
+			ssh := config.SSHConfig{}
+			if h.SSH != nil {
+				ssh = *h.SSH
 			}
+			if cmd.Flags().Changed("ssh-user") {
+				ssh.User = sshUser
+			}
+			if cmd.Flags().Changed("ssh-port") {
+				ssh.Port = sshPort
+			}
+			h.SSH = &ssh
 			h.OnConnect = &config.ConnectAction{Type: "ssh"}
 		}
 
@@ -451,6 +473,9 @@ var addCmd = &cobra.Command{
 			return err
 		}
 
+		if err := cfg.Validate(); err != nil {
+			return err
+		}
 		if err := cfg.Save(cfgFile); err != nil {
 			return fmt.Errorf("failed to save config: %w", err)
 		}
@@ -467,8 +492,18 @@ func init() {
 	listCmd.Flags().BoolP("watch", "w", false, "Continuously watch status")
 	statusCmd.Flags().BoolP("watch", "w", false, "Continuously watch host status")
 
+	for _, cmd := range []*cobra.Command{wakeCmd, connectCmd} {
+		cmd.Flags().String("relay", "", "SSH relay hostname/IP or alias (overrides configured relay)")
+		cmd.Flags().String("broadcast", "", "Broadcast IPv4 address on the target LAN")
+		cmd.Flags().Int("port", 9, "WOL UDP destination port")
+	}
+	wakeCmd.Flags().Bool("wait", false, "Wait for the target to become reachable")
+	addCmd.Flags().String("relay", "", "Always-on SSH relay hostname/IP or alias")
+	addCmd.Flags().String("relay-user", "", "SSH username on the relay")
+	addCmd.Flags().Int("relay-port", 22, "SSH port on the relay")
+	connectCmd.Flags().Bool("no-wake", false, "Connect only if the host is already reachable")
 	connectCmd.Flags().Bool("no-wait", false, "Send WOL and exit immediately without waiting for host to become ready")
-	connectCmd.Flags().Bool("dry-run", false, "Print connect action command without running it")
+	connectCmd.Flags().Bool("dry-run", false, "Show connect action/settings without waking or connecting")
 	connectCmd.Flags().Duration("timeout", 0, "Override wake ready timeout (e.g. 90s)")
 
 	sleepCmd.Flags().Bool("wait", false, "Wait until host goes offline")

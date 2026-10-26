@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"strconv"
 	"strings"
 	"time"
 
@@ -13,6 +15,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/tomer/waker/pkg/actions"
 	"github.com/tomer/waker/pkg/config"
+	"github.com/tomer/waker/pkg/health"
 	"github.com/tomer/waker/pkg/presence"
 	"github.com/tomer/waker/pkg/sleeper"
 	"github.com/tomer/waker/pkg/store"
@@ -138,6 +141,7 @@ type Model struct {
 	settingsMsg   string
 
 	// Form editing
+	formOriginal    config.HostConfig
 	formInputs      []textinput.Model
 	formFocus       int
 	isEditingHost   bool
@@ -190,19 +194,25 @@ func NewModelWithTailscale(cfg *config.Config, st *store.Store, poller *presence
 }
 
 func (m *Model) initFormInputs(host *config.HostConfig) {
+	m.formOriginal = config.HostConfig{}
+	if host != nil {
+		m.formOriginal = *host
+	}
 	m.formErrorMsg = ""
 	m.formFocus = 0
 
-	m.formInputs = make([]textinput.Model, 7)
+	m.formInputs = make([]textinput.Model, 11)
 
 	placeholders := []string{
 		"desktop",
 		"auto-detect or AA:BB:CC:DD:EE:FF",
 		"192.168.1.50 or hostname",
 		"255.255.255.255",
-		"",
-		"",
-		"",
+		"", "", "",
+		"WAKER_AGENT_TOKEN",
+		"home-pi (blank uses default relay)",
+		"pi (or SSH config)",
+		"22",
 	}
 
 	for i := range m.formInputs {
@@ -220,6 +230,16 @@ func (m *Model) initFormInputs(host *config.HostConfig) {
 		m.formInputs[1].SetValue(host.MAC)
 		m.formInputs[2].SetValue(host.IP)
 		m.formInputs[3].SetValue(host.Broadcast)
+		if host.Relay != nil {
+			m.formInputs[8].SetValue(host.Relay.Host)
+			m.formInputs[9].SetValue(host.Relay.User)
+			if host.Relay.Port != 0 {
+				m.formInputs[10].SetValue(fmt.Sprint(host.Relay.Port))
+			}
+		}
+		if host.OnSleep != nil {
+			m.formInputs[7].SetValue(host.OnSleep.TokenEnv)
+		}
 
 		if host.OnConnect != nil {
 			switch strings.ToLower(host.OnConnect.Type) {
@@ -508,7 +528,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if host != nil {
 				stat := m.poller.Get(host.Name)
 				if stat != nil && stat.Status == presence.StatusOnline {
-					return m, m.connectHostCmd(host)
+					return m, m.wakeAndConnectHostCmd(host)
 				}
 				return m, m.wakeHostCmd(host)
 			}
@@ -710,8 +730,6 @@ func (m *Model) handleFormKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	connTypes := []string{"SSH", "Parsec", "Mount (SMB/NFS)", "Game (Steam)", "Custom"}
 	sleepTypes := []string{"SSH (Standard)", "Agent (HTTP)", "Custom"}
 
-	totalFocusable := 11
-
 	switch msg.String() {
 	case "esc":
 		m.mode = ModeList
@@ -720,28 +738,28 @@ func (m *Model) handleFormKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case "tab", "down":
 		m.formErrorMsg = ""
-		m.formFocus = (m.formFocus + 1) % totalFocusable
+		m.moveFormFocus(1)
 		m.applyFormFocus()
 		return *m, nil
 
 	case "shift+tab", "up":
 		m.formErrorMsg = ""
-		m.formFocus = (m.formFocus - 1 + totalFocusable) % totalFocusable
+		m.moveFormFocus(-1)
 		m.applyFormFocus()
 		return *m, nil
 
 	case "enter":
-		if m.formFocus == 10 {
+		if m.formFocus == 14 {
 			m.mode = ModeList
 			m.formErrorMsg = ""
 			return *m, nil
 		}
 
-		if m.formFocus == 9 {
+		if m.formFocus == 13 {
 			return m.submitForm()
 		}
 
-		m.formFocus = (m.formFocus + 1) % totalFocusable
+		m.moveFormFocus(1)
 		m.applyFormFocus()
 		return *m, nil
 	}
@@ -764,8 +782,8 @@ func (m *Model) handleFormKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				}
 				return *m, nil
 			}
-			if m.formFocus == 10 { // Cancel button -> Save button
-				m.formFocus = 9
+			if m.formFocus == 14 { // Cancel button -> Save button
+				m.formFocus = 13
 				return *m, nil
 			}
 
@@ -784,8 +802,8 @@ func (m *Model) handleFormKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				}
 				return *m, nil
 			}
-			if m.formFocus == 9 { // Save button -> Cancel button
-				m.formFocus = 10
+			if m.formFocus == 13 { // Save button -> Cancel button
+				m.formFocus = 14
 				return *m, nil
 			}
 		}
@@ -802,6 +820,24 @@ func (m *Model) handleFormKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	return *m, nil
 }
+
+// Skip fields hidden by the selected connect/sleep methods.
+func (m *Model) moveFormFocus(direction int) {
+	for {
+		m.formFocus = (m.formFocus + direction + 15) % 15
+		if m.formFocus == 6 && m.formConnTypeIdx > 1 {
+			continue
+		}
+		if m.formFocus == 8 && m.formSleepIdx == 0 {
+			continue
+		}
+		if m.formFocus == 9 && m.formSleepIdx != 1 {
+			continue
+		}
+		return
+	}
+}
+
 func (m *Model) currentInputIndex() int {
 	switch m.formFocus {
 	case 0:
@@ -818,6 +854,14 @@ func (m *Model) currentInputIndex() int {
 		return 5 // Connect Secondary
 	case 8:
 		return 6 // Sleep Target
+	case 9:
+		return 7 // Agent token environment
+	case 10:
+		return 8 // Relay host
+	case 11:
+		return 9 // Relay user
+	case 12:
+		return 10 // Relay SSH port
 	default:
 		return -1
 	}
@@ -846,15 +890,24 @@ func (m *Model) submitForm() (tea.Model, tea.Cmd) {
 		return *m, nil
 	}
 
-	if err := m.cfg.UpsertHost(h); err != nil {
+	candidate := *m.cfg
+	candidate.Hosts = append([]config.HostConfig(nil), m.cfg.Hosts...)
+	if m.isEditingHost && !strings.EqualFold(m.formOriginal.Name, h.Name) {
+		if _, err := candidate.FindHost(h.Name); err == nil {
+			m.formErrorMsg = "A host with that nickname already exists"
+			return *m, nil
+		}
+		candidate.DeleteHost(m.formOriginal.Name)
+	}
+	if err := candidate.UpsertHost(h); err != nil {
 		m.formErrorMsg = fmt.Sprintf("Config error: %v", err)
 		return *m, nil
 	}
-
-	if err := m.cfg.Save(m.configPath); err != nil {
+	if err := candidate.Save(m.configPath); err != nil {
 		m.formErrorMsg = fmt.Sprintf("Save failed: %v", err)
 		return *m, nil
 	}
+	*m.cfg = candidate
 
 	m.mode = ModeList
 	m.formErrorMsg = ""
@@ -886,12 +939,8 @@ func (m *Model) parseFormHost() (config.HostConfig, error) {
 		m.formInputs[1].SetValue(detectedMAC)
 	}
 
-	h := config.HostConfig{
-		Name:      name,
-		MAC:       mac,
-		IP:        ip,
-		Broadcast: bcast,
-	}
+	h := m.formOriginal
+	h.Name, h.MAC, h.IP, h.Broadcast = name, mac, ip, bcast
 
 	connTypes := []string{"ssh", "parsec", "mount", "game", "custom"}
 	connType := connTypes[m.formConnTypeIdx]
@@ -901,12 +950,18 @@ func (m *Model) parseFormHost() (config.HostConfig, error) {
 	case "ssh":
 		port := 22
 		if connSecondary != "" {
-			fmt.Sscanf(connSecondary, "%d", &port)
+			parsed, err := strconv.Atoi(connSecondary)
+			if err != nil || parsed < 1 || parsed > 65535 {
+				return config.HostConfig{}, fmt.Errorf("SSH port must be between 1 and 65535")
+			}
+			port = parsed
 		}
-		h.SSH = &config.SSHConfig{
-			User: connPrimary,
-			Port: port,
+		ssh := config.SSHConfig{}
+		if h.SSH != nil {
+			ssh = *h.SSH
 		}
+		ssh.User, ssh.Port = connPrimary, port
+		h.SSH = &ssh
 	case "parsec":
 		if connPrimary == "" {
 			return config.HostConfig{}, fmt.Errorf("Parsec requires a Peer ID")
@@ -927,7 +982,14 @@ func (m *Model) parseFormHost() (config.HostConfig, error) {
 
 	sleepTypes := []string{"ssh", "agent", "custom"}
 	sleepType := sleepTypes[m.formSleepIdx]
-	h.OnSleep = &config.SleepAction{Type: sleepType}
+	sleep := config.SleepAction{Type: sleepType}
+	if h.OnSleep != nil && h.OnSleep.Type == sleepType {
+		sleep = *h.OnSleep
+	}
+	h.OnSleep = &sleep
+	if sleepType == "agent" && h.OnSleep.Token == "" && h.OnSleep.TokenEnv == "" {
+		h.OnSleep.TokenEnv = "WAKER_AGENT_TOKEN"
+	}
 
 	switch sleepType {
 	case "ssh":
@@ -935,9 +997,17 @@ func (m *Model) parseFormHost() (config.HostConfig, error) {
 	case "agent":
 		port := 9876
 		if sleepTarget != "" {
-			fmt.Sscanf(sleepTarget, "%d", &port)
+			parsed, err := strconv.Atoi(sleepTarget)
+			if err != nil || parsed < 1 || parsed > 65535 {
+				return config.HostConfig{}, fmt.Errorf("Agent port must be between 1 and 65535")
+			}
+			port = parsed
 		}
 		h.OnSleep.Port = port
+		h.OnSleep.TokenEnv = strings.TrimSpace(m.formInputs[7].Value())
+		if h.OnSleep.TokenEnv == "" && h.OnSleep.Token == "" {
+			h.OnSleep.TokenEnv = "WAKER_AGENT_TOKEN"
+		}
 	case "custom":
 		if sleepTarget == "" {
 			return config.HostConfig{}, fmt.Errorf("Custom sleep requires a command to run")
@@ -945,12 +1015,34 @@ func (m *Model) parseFormHost() (config.HostConfig, error) {
 		h.OnSleep.Run = sleepTarget
 	}
 
+	relayHost := strings.TrimSpace(m.formInputs[8].Value())
+	if relayHost == "" {
+		h.Relay = nil
+	} else {
+		relay := wol.RelayConfig{}
+		if h.Relay != nil {
+			relay = *h.Relay
+		}
+		relay.Host = relayHost
+		relay.User = strings.TrimSpace(m.formInputs[9].Value())
+		relay.Port = 0
+		if raw := strings.TrimSpace(m.formInputs[10].Value()); raw != "" {
+			port, err := strconv.Atoi(raw)
+			if err != nil || port < 1 || port > 65535 {
+				return config.HostConfig{}, fmt.Errorf("Relay SSH port must be between 1 and 65535")
+			}
+			relay.Port = port
+		}
+		if err := relay.Validate(); err != nil {
+			return config.HostConfig{}, err
+		}
+		h.Relay = &relay
+	}
 	return h, nil
 }
 
 func (m *Model) wakeHostCmd(host *config.HostConfig) tea.Cmd {
 	return func() tea.Msg {
-		m.poller.MarkWaking(host.Name)
 		opts := wol.Options{
 			BroadcastIP: host.Broadcast,
 			Port:        host.Port,
@@ -961,6 +1053,9 @@ func (m *Model) wakeHostCmd(host *config.HostConfig) tea.Cmd {
 			relay = m.cfg.Defaults.Relay
 		}
 		err := wol.SendWithRelay(context.Background(), relay, host.MAC, opts)
+		if err == nil {
+			m.poller.MarkWaking(host.Name)
+		}
 		return WakeCompletedMsg{HostName: host.Name, Err: err}
 	}
 }
@@ -976,50 +1071,58 @@ func (m *Model) sleepHostCmd(hostName string) tea.Cmd {
 	}
 }
 
+// Bubble Tea must release its terminal before an interactive SSH session.
+type connectCommand struct {
+	runner *actions.Runner
+	host   config.HostConfig
+}
+
+func (c *connectCommand) SetStdin(r io.Reader)  { c.runner.Stdin = r }
+func (c *connectCommand) SetStdout(w io.Writer) { c.runner.Stdout = w }
+func (c *connectCommand) SetStderr(w io.Writer) { c.runner.Stderr = w }
+func (c *connectCommand) Run() error {
+	return c.runner.Connect(context.Background(), &c.host, nil, false)
+}
+
 func (m *Model) connectHostCmd(host *config.HostConfig) tea.Cmd {
-	return func() tea.Msg {
-		r := actions.NewRunner(nil, nil, nil)
-		err := r.Connect(context.Background(), host, nil, false)
+	return tea.Exec(&connectCommand{runner: actions.NewRunner(nil, nil, nil), host: *host}, func(err error) tea.Msg {
 		if err != nil {
 			return LogMsg(fmt.Sprintf("Connect failed for %s: %v", host.Name, err))
 		}
-		return LogMsg(fmt.Sprintf("Launched connect action for %s ✓", host.Name))
-	}
+		return LogMsg(fmt.Sprintf("Connect action finished for %s", host.Name))
+	})
 }
 
 func (m *Model) wakeAndConnectHostCmd(host *config.HostConfig) tea.Cmd {
 	return func() tea.Msg {
-		m.poller.MarkWaking(host.Name)
-		relay := host.Relay
-		if relay == nil {
-			relay = m.cfg.Defaults.Relay
+		timeout := m.cfg.Defaults.Timeout
+		if timeout <= 0 {
+			timeout = 120 * time.Second
 		}
-		_ = wol.SendWithRelay(context.Background(), relay, host.MAC, wol.Options{
-			BroadcastIP: host.Broadcast,
-			Port:        host.Port,
-			IfaceName:   host.Interface,
-		})
-
-		ctx, cancel := context.WithTimeout(context.Background(), m.cfg.Defaults.Timeout)
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
 		defer cancel()
-
+		reachable, _ := health.IsReachable(health.CheckHost(ctx, host, m.cfg.Defaults.ProbeTimeout))
+		if !reachable {
+			relay := host.Relay
+			if relay == nil {
+				relay = m.cfg.Defaults.Relay
+			}
+			if err := wol.SendWithRelay(ctx, relay, host.MAC, wol.Options{BroadcastIP: host.Broadcast, Port: host.Port, IfaceName: host.Interface}); err != nil {
+				return LogMsg(fmt.Sprintf("Wake failed for %s: %v", host.Name, err))
+			}
+			m.poller.MarkWaking(host.Name)
+		}
 		ticker := time.NewTicker(2 * time.Second)
 		defer ticker.Stop()
-
 		for {
+			checks := health.CheckReady(ctx, host, m.cfg.Defaults.ProbeTimeout)
+			if ready, _ := health.IsReachable(checks); ready {
+				return m.connectHostCmd(host)()
+			}
 			select {
 			case <-ctx.Done():
-				return LogMsg(fmt.Sprintf("Timed out waiting for %s to wake", host.Name))
+				return LogMsg(fmt.Sprintf("Timed out waiting for %s (%s) to be ready: %+v", host.Name, host.IP, checks))
 			case <-ticker.C:
-				res := m.poller.ProbeOne(ctx, host)
-				if res.Status == presence.StatusOnline {
-					r := actions.NewRunner(nil, nil, nil)
-					err := r.Connect(context.Background(), host, nil, false)
-					if err != nil {
-						return LogMsg(fmt.Sprintf("Connected error for %s: %v", host.Name, err))
-					}
-					return LogMsg(fmt.Sprintf("Host %s woke and connected successfully! ✓", host.Name))
-				}
 			}
 		}
 	}
@@ -1294,7 +1397,7 @@ func (m Model) viewSettings() string {
 	}
 	sw0 := renderToggleSwitch(m.cfg.Settings.AutoTailscale, m.settingsFocus == 0)
 	sb.WriteString(fmt.Sprintf("%s%-32s %s\n", cur0, name0Style.Render("Auto-manage Tailscale"), sw0))
-	sb.WriteString(fmt.Sprintf("    %s\n\n", hintStyle.Render("Start Tailscale before scanning on launch; shut it down on quit (if started by Waker)")))
+	sb.WriteString(fmt.Sprintf("    %s\n\n", hintStyle.Render("Start Tailscale before network operations; leave connected for remote apps")))
 
 	// Row 1: Sort Online Hosts First
 	cur1 := "  "
@@ -1517,26 +1620,63 @@ func (m Model) viewForm() string {
 
 	switch m.formSleepIdx {
 	case 0: // SSH
-		sb.WriteString("     " + hintStyle.Render("systemctl suspend (Linux), osascript (macOS), or rundll32 (Windows)") + "\n")
+		sb.WriteString("     " + hintStyle.Render("SSH suspend on Linux/macOS; use Agent for Windows") + "\n")
 	case 1: // Agent
 		sb.WriteString(renderField("Agent Port", m.formInputs[6], m.formFocus == 8, "") + "\n")
+		sb.WriteString(renderField("Token env", m.formInputs[7], m.formFocus == 9, "set on client; same token on target") + "\n")
 	case 2: // Custom
 		sb.WriteString(renderField("Sleep Command *", m.formInputs[6], m.formFocus == 8, "") + "\n")
 	}
 	sb.WriteString("\n")
 
+	sb.WriteString("WAKE RELAY (ALWAYS-ON HOME DEVICE)\n")
+	sb.WriteString(renderField("Relay host", m.formInputs[8], m.formFocus == 10, "blank uses defaults.relay") + "\n")
+	sb.WriteString(renderField("Relay SSH user", m.formInputs[9], m.formFocus == 11, "") + "\n")
+	sb.WriteString(renderField("Relay SSH port", m.formInputs[10], m.formFocus == 12, "") + "\n\n")
 	// 4. ACTION BUTTONS
 	saveBtn := btnStyle.Background(lipgloss.Color("#2E3440")).Foreground(lipgloss.Color("#D8DEE9")).Render("[ Save Host ]")
-	if m.formFocus == 9 {
+	if m.formFocus == 13 {
 		saveBtn = btnActiveStyle.Render("> [ Save Host ]")
 	}
 
 	cancelBtn := btnStyle.Background(lipgloss.Color("#2E3440")).Foreground(lipgloss.Color("#7B88A1")).Render("[ Cancel ]")
-	if m.formFocus == 10 {
+	if m.formFocus == 14 {
 		cancelBtn = btnStyle.Background(lipgloss.Color("#4C566A")).Foreground(lipgloss.Color("#ECEFF4")).Bold(true).Render("> [ Cancel ]")
 	}
 
 	sb.WriteString(fmt.Sprintf("     %s    %s\n", saveBtn, cancelBtn))
 
-	return panelStyle.Width(m.width - 4).Render(sb.String())
+	lines := strings.Split(sb.String(), "\n")
+	for i, line := range lines {
+		lines[i] = lipgloss.NewStyle().MaxWidth(m.width - 8).Render(line)
+	}
+	maxLines := m.height - 4
+	if maxLines < 8 {
+		maxLines = 8
+	}
+	if len(lines) > maxLines {
+		focusLine := 0
+		for i, line := range lines {
+			if strings.HasPrefix(line, "> ") || strings.Contains(line, "> [ Save Host ]") || strings.Contains(line, "> [ Cancel ]") {
+				focusLine = i
+			}
+		}
+		start := 0
+		if focusLine >= maxLines-2 {
+			start = focusLine - maxLines + 3
+		}
+		if start > len(lines)-maxLines {
+			start = len(lines) - maxLines
+		}
+		end := start + maxLines
+		visible := append([]string(nil), lines[start:end]...)
+		if start > 0 {
+			visible[0] = "↑ More fields above (Shift+Tab)"
+		}
+		if end < len(lines) {
+			visible[len(visible)-1] = "↓ More fields below (Tab)"
+		}
+		lines = visible
+	}
+	return panelStyle.Width(m.width - 4).Render(strings.Join(lines, "\n"))
 }

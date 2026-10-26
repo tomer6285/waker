@@ -1,6 +1,7 @@
 package config
 
 import (
+	"github.com/tomer/waker/pkg/wol"
 	"os"
 	"path/filepath"
 	"testing"
@@ -262,5 +263,31 @@ func TestHostConfigValidate(t *testing.T) {
 	}
 	if err := hBadIP.Validate(); err == nil {
 		t.Fatal("expected error for invalid IP/hostname with spaces, got nil")
+	}
+}
+
+func TestUpsertAppliesHomeBroadcastImmediately(t *testing.T) {
+	cfg := &Config{Defaults: DefaultsConfig{Broadcast: "192.168.77.255"}}
+	if err := cfg.UpsertHost(HostConfig{Name: "desktop", MAC: "AA:BB:CC:DD:EE:FF", IP: "desktop", Relay: &wol.RelayConfig{Host: "home-pi"}}); err != nil {
+		t.Fatal(err)
+	}
+	host := cfg.Hosts[0]
+	if host.Broadcast != "192.168.77.255" || host.Port != 9 || host.ShouldCheckSubnet() {
+		t.Fatalf("remote defaults not applied: %+v", host)
+	}
+}
+
+func TestSampleRemoteConfig(t *testing.T) {
+	cfg, err := Load("../../hosts.sample.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Defaults.Relay == nil || cfg.Defaults.Relay.Host != "home-pi" {
+		t.Fatal("sample missing always-on relay")
+	}
+	for _, h := range cfg.Hosts {
+		if h.ShouldCheckSubnet() {
+			t.Fatalf("sample host %s blocks routed checks", h.Name)
+		}
 	}
 }

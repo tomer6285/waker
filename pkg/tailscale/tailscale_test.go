@@ -113,7 +113,7 @@ func TestManagerTailscaleAlreadyUp(t *testing.T) {
 
 func TestManagerTailscaleDownOnLaunch(t *testing.T) {
 	// If Tailscale is not up, it runs tailscale up before scanning for devices status,
-	// and when quitting waker it puts tailscale down.
+	// and keeps it running after quitting for external clients.
 	mock := &mockClient{isUp: false}
 	mgr := NewManagerWithClient(mock)
 
@@ -138,11 +138,11 @@ func TestManagerTailscaleDownOnLaunch(t *testing.T) {
 	if err := mgr.OnQuit(context.Background(), true); err != nil {
 		t.Fatalf("unexpected quit error: %v", err)
 	}
-	if mock.downCalls != 1 {
-		t.Errorf("expected 1 downCall on quit, got %d", mock.downCalls)
+	if mock.downCalls != 0 {
+		t.Errorf("expected no automatic downCall on quit, got %d", mock.downCalls)
 	}
-	if mgr.StartedByWaker() {
-		t.Errorf("expected StartedByWaker to reset to false after quit")
+	if !mgr.StartedByWaker() {
+		t.Errorf("expected Tailscale startup state to remain after quit")
 	}
 }
 

@@ -85,9 +85,10 @@ func TestPresencePoller_SubnetUnreachable(t *testing.T) {
 		},
 		Hosts: []config.HostConfig{
 			{
-				Name: "remote-host",
-				MAC:  "AA:BB:CC:DD:EE:FF",
-				IP:   "192.168.99.50",
+				SubnetCheck: func() *bool { v := true; return &v }(),
+				Name:        "remote-host",
+				MAC:         "AA:BB:CC:DD:EE:FF",
+				IP:          "192.168.99.50",
 				Checks: []config.CheckConfig{
 					{Type: "tcp", Port: 22},
 				},

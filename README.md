@@ -1,300 +1,198 @@
 # Waker ⚡
 
-> Wake-on-LAN manager with a TUI + CLI. Wake machines on demand and seamlessly chain into what you actually want to do — SSH, Parsec, mounts, game servers, or custom scripts.
-
-[![Go](https://img.shields.io/badge/Go-1.27+-00ADD8?logo=go&logoColor=white)](https://go.dev)
-[![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey)]()
-[![License](https://img.shields.io/badge/license-MIT-green)]()
-
-No more manual `wake → ping -c100 → ssh` loop. Define your hosts once, `waker` handles **wake + wait + connect + sleep**.
+A terminal UI and CLI for waking, checking, connecting to, and sleeping computers.
 
 ```sh
-waker connect desktop
-# → sends WOL magic packet → waits for SSH/ping/TCP → ssh user@desktop
+waker                       # interactive UI
+waker connect desktop       # wake if needed, wait for readiness, connect
+waker sleep desktop --wait
 ```
 
----
+## Install
 
-## ✨ Features
-
-- 🖥️ **Interactive TUI** (Bubble Tea) — browse hosts, live presence, wake/connect/sleep, add/edit/delete, logs, filter
-- ⌨️ **Scriptable CLI** — `list`, `status`, `wake`, `connect`, `sleep`, `ping`, `add` with `--json` and `--watch` flags
-- 📡 **Wake-on-LAN** — magic packets via broadcast, per-host interface, or SSH relay for remote networks
-- 👀 **Presence polling** — ping + TCP (+ ARP) checks, latency, last-seen, online-first sorting
-- 🔌 **Pluggable connect actions** — `ssh`, `parsec`, `mount` (smb://), `game` (steam://), `custom` scripts
-- 😴 **Remote sleep** — via SSH (zero-install), `waker-agent` (HTTP + token), or custom webhooks
-- 📄 **Simple YAML config** — `~/.config/waker/hosts.yaml`, auto-created on first run
-- ➕ **MAC auto-detection** — `waker add` can resolve MAC from IP via ARP when `--mac` is omitted
-
----
-
-## 📦 Installation
-
-### Prerequisites
-
-- Go 1.27+
-- `ssh` client (for SSH connect/sleep and relay support)
-- `parsecd` (only if you use Parsec actions — must already be logged in)
-- WOL-capable wired NIC with Wake-on-LAN enabled in BIOS/UEFI (magic packets don't work over Wi-Fi on most hardware)
-
-### Option 1: `go install` (recommended)
+Requires Go 1.27+ to build. SSH actions require the system `ssh` client.
 
 ```sh
+make build                  # bin/waker and bin/waker-agent
+make install                # installs waker to ~/.local/bin
+# Or:
 go install github.com/tomer/waker/cmd/waker@latest
-go install github.com/tomer/waker/cmd/waker-agent@latest  # optional, for keyless remote sleep
 ```
 
-### Option 2: Build from source
+Configuration lives at `~/.config/waker/hosts.yaml` (an existing `hosts.yml` is also supported). Override it with `--config PATH`. First launch creates an empty configuration. See [hosts.sample.yaml](hosts.sample.yaml).
+
+## Remote wake over Tailscale
+
+Use an **always-on SSH relay on the target's home LAN**. The relay sends the wake packet locally; after waking, the target is accessed directly through Tailscale.
+
+1. Laptop → relay's Tailscale address → SSH → local Wake-on-LAN packet.
+2. Target wakes and reconnects to Tailscale.
+3. Laptop → target's Tailscale address → SSH, sleep agent, or other connect action.
+
+The sleeping target's Tailscale address is unreachable until it wakes. A Tailscale subnet router alone does not forward WOL broadcasts. This setup needs no subnet routes, public port forwarding, or Waker daemon on the relay.
+
+### Relay requirements
+
+- A Pi, NAS, Linux server, or similar device that stays awake.
+- Tailscale running in the same tailnet as your client.
+- An SSH server with key authentication.
+- Python 3 and a POSIX shell.
+- Access to the target's physical LAN/broadcast domain. Ethernet is recommended.
+
+On your client, first connect interactively to establish SSH host trust and verify the key and Python installation:
 
 ```sh
-git clone https://github.com/tomer/waker.git
-cd waker
-make build        # produces bin/waker and bin/waker-agent
-make install      # copies to ~/.local/bin (ensure it's on your PATH)
+ssh pi@home-pi 'python3 --version'
+ssh -o BatchMode=yes pi@home-pi 'python3 --version'
 ```
 
-### Option 3: Manual `go build`
+Here `home-pi` is the relay's MagicDNS name, Tailscale IP, or an SSH config alias. Waker honors `~/.ssh/config` and the SSH agent. Resolve any login, host-key, or Tailscale access-policy errors before using Waker.
 
-```sh
-go build -o bin/waker ./cmd/waker
-go build -o bin/waker-agent ./cmd/waker-agent  # optional
-```
+### Target requirements
 
-> See [`hosts.sample.yaml`](./hosts.sample.yaml) for a ready-to-copy example config.
+- Wake-on-LAN enabled in BIOS/UEFI and the OS/NIC settings.
+- A supported sleep/power state and a powered NIC; wired Ethernet is usually required.
+- Tailscale running automatically after boot/resume.
+- SSH enabled for SSH connect/sleep, or the optional sleep agent described below.
 
----
+Use the target's **physical Ethernet MAC**, not its Tailscale interface address. MAC auto-detection only works on the local LAN while the target is awake; enter the MAC explicitly for remote setup.
 
-## 🚀 Quickstart
+### Configuration
 
-1. **Launch the TUI** (creates `~/.config/waker/hosts.yaml` on first run):
-
-   ```sh
-   waker
-   waker --config ./hosts.sample.yaml   # try with the sample config
-   ```
-
-2. **Add a host** (TUI: press `a`, or via CLI):
-
-   ```sh
-   waker add --name desktop --mac AA:BB:CC:DD:EE:FF --ip 192.168.1.10 \
-     --connect ssh --user tomer
-
-   # MAC auto-detected via ARP when omitted (host must be online):
-   waker add --name nas --ip 192.168.1.20 --connect ssh --user tomer
-   ```
-
-3. **Wake → wait → connect**:
-
-   ```sh
-   waker wake desktop --wait
-   waker connect desktop
-   waker connect desktop --timeout 60s -- -X   # extra args passed to ssh
-   ```
-
-4. **Put it back to sleep**:
-
-   ```sh
-   waker sleep desktop
-   ```
-
----
-
-## 🖥️ TUI
-
-Run with no arguments to start the interactive terminal UI:
-
-```sh
-waker
-waker --config hosts.yaml
-```
-
-| Key | Action |
-|---|---|
-| `j` / `↓`, `k` / `↑` | Navigate hosts |
-| `enter` | Wake host (or connect immediately if already online) |
-| `c` / `shift+enter` | Connect pipeline: wake → wait until reachable → launch action |
-| `w` | Send Wake-on-LAN magic packet only |
-| `z` | Suspend / sleep machine (with confirmation) |
-| `p` | Manual ping & TCP health-check probe |
-| `a` / `e` / `d` | Add / edit / delete host |
-| `o` | Toggle sort online-first |
-| `r` | Refresh presence status immediately |
-| `/` | Filter hosts by name or IP |
-| `l` | Activity logs screen |
-| `?` | Help screen |
-| `q` | Quit |
-
-> `shift+enter` needs Kitty keyboard / `modifyOtherKeys` support — `c` is the fallback where the terminal swallows it.
-
----
-
-## ⌨️ CLI Reference
-
-```sh
-# List hosts and presence status
-waker list
-waker list --json
-waker list --watch
-
-# Single-host status & probe details
-waker status desktop
-waker status desktop --json
-waker status desktop --watch
-
-# Probe checks directly (exit 0 = online, 1 = offline, 2 = config error)
-waker ping desktop
-
-# Wake-on-LAN
-waker wake desktop
-waker wake desktop --wait
-waker wake desktop --broadcast 192.168.1.255 --port 9
-waker wake desktop --relay home-pi              # wake via SSH relay (remote nets)
-
-# Wake, wait, and connect
-waker connect desktop
-waker connect desktop --timeout 60s
-waker connect desktop --no-wake                 # fail if offline instead of waking
-waker connect desktop -- -X                     # extra flags forwarded to ssh
-
-# Suspend / sleep
-waker sleep desktop
-waker sleep desktop --method ssh|agent|custom
-waker sleep desktop --confirm --timeout 10s
-
-# Add or update a host
-waker add --name desktop --mac AA:BB:CC:DD:EE:FF --ip 192.168.1.10 --connect ssh --user tomer
-waker add --name gaming-pc --mac DE:AD:BE:EF:00:01 --ip 192.168.1.50 --connect parsec --peer-id demo123
-
-# Use a custom config file / JSON output globally
-waker --config ./hosts.yaml list
-waker --json list
-```
-
----
-
-## ⚙️ Configuration
-
-Default path: `~/.config/waker/hosts.yaml` (override with `--config`). Auto-created on first run with `0600` permissions.
-
-Minimal example — full annotated example in [`hosts.sample.yaml`](./hosts.sample.yaml):
+Replace the example MAC, names, user, and broadcast with your own values:
 
 ```yaml
 version: 1
-
+settings:
+  auto_tailscale: true
 defaults:
-  broadcast: 192.168.1.255
+  broadcast: 192.168.1.255   # broadcast address of the HOME LAN
   wol_port: 9
   timeout: 120s
   poll_interval: 15s
   probe_timeout: 2s
-  # relay: { host: home-pi, user: pi }  # SSH relay for remote WOL
-
+  relay:
+    host: home-pi            # always-on relay's Tailscale name/IP or SSH alias
+    user: pi
+    port: 22
 hosts:
   - name: desktop
-    mac: AA:BB:CC:DD:EE:FF
-    ip: 192.168.1.10
+    mac: AA:BB:CC:DD:EE:FF   # target's physical Ethernet MAC
+    ip: desktop             # target's Tailscale MagicDNS name or 100.x address
+    subnet_check: false
     ssh: { user: tomer, port: 22 }
-    checks: [{ type: ping }, { type: tcp, port: 22 }]
+    checks: [{ type: tcp, port: 22 }]
     on_connect: { type: ssh }
     on_sleep: { type: ssh }
-
-  - name: gaming-pc
-    mac: DE:AD:BE:EF:00:01
-    ip: 192.168.1.50
-    checks: [{ type: ping }, { type: tcp, port: 21725 }]
-    on_connect: { type: parsec, peer_id: "demo-peer-id" }
-    on_sleep: { type: agent, port: 9876, token_env: WAKER_AGENT_TOKEN }
 ```
 
-MAC formats are flexible (`AA:BB:..`, `AA-BB-..`, `AABB..`, lowercase all normalize).
+Allow SSH from the client to the relay and target in your tailnet policy and host firewalls. If using the sleep agent, allow its TCP port on the target too.
 
-### 🔌 Connect actions (`on_connect`)
+A host-level `relay:` overrides `defaults.relay`. A configured relay is used both at home and away; omit relay settings for local-only broadcast. In the TUI, add/edit a host to configure its relay host, user, and port. Leaving relay host blank inherits the default.
 
-| Type | What it does |
-|---|---|
-| `ssh` | Execs system `ssh` — respects `~/.ssh/config`, agents, `ProxyJump`, `ControlMaster` |
-| `parsec` | Launches `parsecd peer_id=ID[:settings]` (macOS / Linux / Windows paths resolved automatically) |
-| `mount` | Opens `smb://…` URLs via OS handler (`open` / `xdg-open` / `explorer`) |
-| `game` | Opens client URLs like `steam://connect/…` via OS handler |
-| `custom` | Runs arbitrary `run:` script with `WAKER_HOST_NAME`, `WAKER_HOST_IP`, `WAKER_HOST_MAC` env vars |
+Advanced relay settings can be supplied in YAML:
 
-### 😴 Sleep methods (`on_sleep`)
+```yaml
+relay:
+  host: home-pi
+  user: pi
+  args: ["-i", "/absolute/path/to/relay_key"]
+  source_ip: 192.168.1.2     # optional relay LAN address for a multi-NIC relay
+```
 
-| Method | How it works |
-|---|---|
-| `ssh` (default) | Zero-install suspend over existing SSH keys (`systemctl suspend` / `osascript` sleep / `rundll32 …SetSuspendState`) |
-| `agent` | `POST /sleep` to `waker-agent` on the target (Bearer token auth, default port `9876`) |
-| `custom` | Any command — e.g. Home Assistant webhook or MQTT publish |
+`interface:` selects a **client-side** interface for local WOL and cannot be combined with a relay. Use `relay.source_ip` instead. The broadcast address always belongs to the target LAN, not the Tailscale network.
 
-Flow: require `online` → confirm (TUI always, CLI only with `--confirm`) → run method → poll until `offline` (10s default).
+`auto_tailscale: true` starts the client's Tailscale connection before the TUI and every network CLI command. Startup errors are reported. **Waker leaves Tailscale connected on exit** so SSH, Parsec, mounts, and games can continue working. Complete Tailscale installation/login beforehand; this setting does not enroll the relay or target. You can manually disconnect from the TUI settings or Tailscale itself.
 
-### 👀 Presence (`checks`)
+### Verify the setup
 
-Each host's `checks` double as presence probes: `ping` (system ping, no root needed), `tcp` (dial `ip:port`), `arp` (OS ARP cache). Statuses: `online` ● / `offline` ○ / `waking` ◌ / `unknown` ?. Configure with `poll_interval` and `probe_timeout` under `defaults`.
-
-> Sleep and power-off are indistinguishable on the wire — both show as `offline (last seen …)`.
-
----
-
-## 🛰️ `waker-agent` (optional)
-
-Tiny HTTP server for keyless sleep on targets where you don't want SSH keys:
+First confirm WOL works locally. Then, with the client on another network and the relay still on at home:
 
 ```sh
-# On the target machine (listens on :9876 by default):
-WAKER_AGENT_TOKEN=super-secret waker-agent
-# or: waker-agent --port 9876 --token super-secret
-
-# In hosts.yaml:
-on_sleep: { type: agent, port: 9876, token_env: WAKER_AGENT_TOKEN }
+waker status desktop
+waker wake desktop --wait
+waker connect desktop
+waker sleep desktop --wait
 ```
 
-Binds LAN only, Bearer-token auth, token passed via `token_env` (never logged).
+Successful UDP delivery only means the relay sent a packet. `--wait` verifies target readiness. SSH connect waits for the configured SSH TCP port; ping alone is insufficient after resume.
 
----
+If wake fails, check the relay's SSH/Python error. If it sends successfully but times out, check the target MAC, home broadcast address, VLAN isolation, NIC/BIOS WOL settings, and Tailscale startup on the target. If the target is already awake, `connect` skips the relay. Explicit `wake` always sends a packet.
 
-## 📋 Requirements & Notes
+## Optional waker-agent: sleep on the target
 
-- **Same subnet for WOL** — magic packets are broadcast-based. For remote networks, use Tailscale/subnet-router or the `relay:` SSH option (sends the packet from an always-on home device).
-- **Blocked ICMP?** — give the host an explicit TCP check (e.g. `checks: [{type: tcp, port: 22}]`).
-- **Parsec** — client must already be logged in; get the peer ID from Parsec → Computers → right-click → Copy Peer ID.
-- **SSH sleep/connect** — one-time `ssh-copy-id user@host` removes per-use auth prompts.
+**The agent runs on the computer you want to sleep, not on the wake relay.** It handles `POST /sleep` and `GET /health`; it cannot wake a sleeping machine. The relay requires no Waker installation.
 
----
-
-## 🛠️ Development
+Use the agent when SSH suspend is unavailable or inconvenient, especially on Windows. For ordinary Linux/macOS SSH sleep, no agent is needed. The service account must have permission to suspend the target.
 
 ```sh
-make build    # build both binaries into bin/
-make test     # go test -v ./...
-make run      # build + launch TUI
-make clean    # remove bin/
+go install github.com/tomer/waker/cmd/waker-agent@latest
+
+# On the TARGET, set a strong token through your shell/service configuration.
+# Bind explicitly to the target's Tailscale IP:
+waker-agent --bind 100.101.102.103 --port 9876
 ```
 
-Project layout:
+Set `WAKER_AGENT_TOKEN` on the target before starting the agent. It refuses to start without a token. It defaults to `127.0.0.1`, so remote use requires `--bind`. Bind to the target's Tailscale address to limit access to the tailnet; `0.0.0.0` exposes every IPv4 interface. Start the agent after Tailscale has assigned its address, and configure it to restart on failure if installed as a service.
 
-```
-cmd/waker/         CLI + TUI entrypoint (cobra)
-cmd/waker-agent/   optional remote-sleep HTTP server
-pkg/config/        YAML load/validate/save
-pkg/wol/           magic packet construction, broadcast, SSH relay
-pkg/health/        ping / TCP / ARP checkers
-pkg/presence/      polling, status merging, last-seen
-pkg/actions/       ssh / parsec / mount / game / custom
-pkg/sleeper/       ssh / agent / custom sleep dispatcher
-pkg/store/         wake history, last-seen cache
-pkg/tui/           Bubble Tea models (list, detail, add/edit, logs, help)
-hosts.sample.yaml  example config
+On the CLIENT, export the **same token**, then configure the target:
+
+```yaml
+on_sleep:
+  type: agent
+  port: 9876
+  token_env: WAKER_AGENT_TOKEN
 ```
 
----
+The TUI's Agent sleep option includes a token environment-variable field. Existing token settings survive host edits. Static `token:` is supported, but an environment variable avoids storing it in YAML. Never commit tokens.
 
-## 🤝 Contributing
+`GET /health` is an unauthenticated liveness check. `POST /sleep` requires an exact Bearer token. An accepted sleep response means suspension was requested; use `waker sleep desktop --wait` to confirm the target becomes unreachable. Suspend failures are logged on the target. HTTP traffic runs inside the encrypted Tailscale connection when using its address.
 
-Issues and PRs welcome. Run `make test` before submitting; keep the TUI fast (no blocking I/O in the render path) and prefer `exec`ing system tools over reimplementing them.
+**Upgrade note:** agents previously started without a token or without an explicit bind address need their startup configuration updated.
 
----
+## CLI
 
-## 📄 License
+```sh
+waker list [--json] [--watch]
+waker status desktop [--json] [--watch]
+waker ping desktop [--json]
 
-MIT — see [LICENSE](./LICENSE) (add one if missing).
+waker wake desktop [--wait]
+waker wake desktop --relay home-pi --broadcast 192.168.1.255 --port 9
+waker connect desktop --timeout 120s
+waker connect desktop --no-wake       # fail if offline
+waker connect desktop --no-wait       # if waking, send packet and exit
+waker connect desktop --dry-run       # show action/settings without waking/connecting
+waker connect desktop -- -X           # forward options to SSH
+
+waker sleep desktop [--wait]
+waker add desktop --mac AA:BB:CC:DD:EE:FF --ip desktop \
+  --ssh-user tomer --relay home-pi --relay-user pi --broadcast 192.168.1.255
+waker --config ./hosts.yaml list
+```
+
+`--relay` on wake/connect overrides the configured relay; use an SSH alias for its user/key/port. `add` also supports `--relay-port` and `--ssh-port`. Configure connect/sleep types and advanced settings through YAML or the TUI.
+
+## TUI
+
+Run `waker`. Use arrows or `j/k` to select a host; `enter` wakes an offline host or connects to an online one, `c` wakes and connects, `w` sends WOL, `z` sleeps, `p` probes, and `r` refreshes. Use `a/e/d` to add/edit/delete, `/` to filter, `l` for logs, `s` for settings, `?` for help, and `q` to quit.
+
+## Actions and presence
+
+Connect actions: `ssh`, `parsec` (`peer_id`, optional `settings`), `mount`/`game` (`url`), and `custom` (`run`). Parsec requires its client to be installed and logged in. Mount/game URLs must themselves use an address reachable remotely; Waker does not rewrite them.
+
+Sleep actions: `ssh` (default), `agent`, and `custom` (`run`). SSH sleep uses a POSIX detection script for Linux/macOS; Windows' default OpenSSH shell should use the agent or a custom sleep command. SSH authentication and suspend-command failures are reported. If suspension drops SSH, Waker requires a remote command acknowledgement and an offline probe before treating the disconnect as success. An ambiguous disconnect is reported as an error; check the target status.
+
+Checks: `ping`, `tcp` (`port`), `arp`. Any successful presence check marks a host online. Use TCP for remote hosts; ARP is local-only and cached entries can be stale. Sleep and power-off cannot be distinguished by these probes.
+
+`subnet_check` defaults to **false**: OS routing and actual probes determine reachability, including Tailscale and routed networks. Explicit `true` enables the old local-interface guard and can reject valid VPN routes; remove it or set false for remote hosts.
+
+## Development
+
+```sh
+make test
+make build
+go vet ./...
+```
+
+The automated relay tests execute the transmitted Python through an SSH test double and verify the actual 102-byte UDP packet. Real hardware WOL and off-site Tailscale connectivity require the setup check above.

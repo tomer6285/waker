@@ -3,15 +3,18 @@ package tui
 import (
 	"context"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/tomer/waker/pkg/config"
 	"github.com/tomer/waker/pkg/presence"
 	"github.com/tomer/waker/pkg/store"
 	"github.com/tomer/waker/pkg/tailscale"
+	"github.com/tomer/waker/pkg/wol"
 )
 
 type mockTailscaleClient struct {
@@ -253,7 +256,7 @@ func TestFormNicknameAndHostname(t *testing.T) {
 	}
 
 	// Attempt submitting with empty name -> verify error "Nickname is required"
-	m.formFocus = 9 // Save button
+	m.formFocus = 13 // Save button
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	m = updated.(Model)
 	if m.mode != ModeForm {
@@ -269,7 +272,7 @@ func TestFormNicknameAndHostname(t *testing.T) {
 	m.formInputs[2].SetValue("my-pc.tailnet.ts.net")
 
 	// Submit form
-	m.formFocus = 9 // Save button
+	m.formFocus = 13 // Save button
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	m = updated.(Model)
 	if m.mode != ModeList {
@@ -353,18 +356,75 @@ func TestFormHAndLKeysInput(t *testing.T) {
 	}
 
 	// Test buttons navigation with h/l
-	m.formFocus = 9 // Save button
+	m.formFocus = 13 // Save button
 	m.applyFormFocus()
 	// Press 'l' -> should move to Cancel button (10)
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'l'}})
 	m = updated.(Model)
-	if m.formFocus != 10 {
+	if m.formFocus != 14 {
 		t.Errorf("expected formFocus == 10 after 'l' on Save button, got %d", m.formFocus)
 	}
 	// Press 'h' -> should move back to Save button (9)
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'h'}})
 	m = updated.(Model)
-	if m.formFocus != 9 {
+	if m.formFocus != 13 {
 		t.Errorf("expected formFocus == 9 after 'h' on Cancel button, got %d", m.formFocus)
+	}
+}
+
+func TestFormPreservesRemoteSettings(t *testing.T) {
+	m, _, _ := setupTestModel(t, false)
+	host := m.cfg.Hosts[0]
+	host.Relay = &wol.RelayConfig{Host: "home-pi", User: "pi", Port: 2222, SourceIP: "192.168.1.2", Args: []string{"-i", "/relay/key"}}
+	host.SSH = &config.SSHConfig{User: "user", Port: 2223, Args: []string{"-i", "/target/key"}}
+	host.Checks = []config.CheckConfig{{Type: "tcp", Port: 2223}}
+	host.OnConnect = &config.ConnectAction{Type: "ssh"}
+	host.OnSleep = &config.SleepAction{Type: "agent", Port: 9876, TokenEnv: "MY_TOKEN", Token: "existing-token"}
+	m.initFormInputs(&host)
+	edited, err := m.parseFormHost()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(host.Relay, edited.Relay) || !reflect.DeepEqual(host.SSH, edited.SSH) || !reflect.DeepEqual(host.OnSleep, edited.OnSleep) || !reflect.DeepEqual(host.Checks, edited.Checks) {
+		t.Fatalf("remote settings lost: %+v", edited)
+	}
+	m.formInputs[8].SetValue("new-relay")
+	edited, err = m.parseFormHost()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if edited.Relay.Host != "new-relay" || host.Relay.Host != "home-pi" {
+		t.Fatal("editing mutated original relay")
+	}
+}
+
+func TestWakeConnectReportsRelayFailure(t *testing.T) {
+	m, _, _ := setupTestModel(t, false)
+	h := &config.HostConfig{Name: "offline", MAC: "AA:BB:CC:DD:EE:FF", IP: "127.0.0.1", Checks: []config.CheckConfig{{Type: "tcp", Port: 1}}, Relay: &wol.RelayConfig{Host: "-invalid"}}
+	msg := m.wakeAndConnectHostCmd(h)()
+	if !strings.Contains(string(msg.(LogMsg)), "Wake failed") {
+		t.Fatalf("relay error swallowed: %v", msg)
+	}
+	if got := m.poller.Get("test-host"); got.Status == presence.StatusWaking {
+		t.Fatal("failed delivery marked waking")
+	}
+}
+
+func TestRelayFieldsRemainVisibleInSmallTerminal(t *testing.T) {
+	m, _, _ := setupTestModel(t, false)
+	m.initFormInputs(nil)
+	m.formFocus = 10
+	m.applyFormFocus()
+	view := m.viewForm()
+	if !strings.Contains(view, "Relay host") {
+		t.Fatal("focused relay field is offscreen")
+	}
+	if lipgloss.Height(view) > m.height {
+		t.Fatalf("form exceeds terminal: %d > %d", lipgloss.Height(view), m.height)
+	}
+	m.formFocus = 13
+	view = m.viewForm()
+	if !strings.Contains(view, "Save Host") {
+		t.Fatal("save control is offscreen")
 	}
 }

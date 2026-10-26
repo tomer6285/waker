@@ -3,6 +3,7 @@ package wol
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -133,72 +134,109 @@ func Send(macStr string, opts Options) error {
 	return nil
 }
 
-// RelayConfig specifies remote SSH relay connection settings.
+// RelayConfig specifies an always-on SSH host on the target's physical LAN.
+// The relay needs a POSIX shell and Python 3; it does not run waker-agent.
 type RelayConfig struct {
-	Host string `yaml:"host"`           // Relay hostname or IP (e.g. home-pi or Tailscale IP)
-	User string `yaml:"user,omitempty"` // SSH user (optional)
-	Port int    `yaml:"port,omitempty"` // SSH port (default 22)
+	Host     string   `yaml:"host"`
+	User     string   `yaml:"user,omitempty"`
+	Port     int      `yaml:"port,omitempty"`
+	Args     []string `yaml:"args,omitempty"`
+	SourceIP string   `yaml:"source_ip,omitempty"` // Relay's LAN IPv4 address, for multi-NIC hosts.
 }
 
-// SendViaSSHRelay constructs a valid WOL magic packet locally, connects to the remote relay machine
-// over SSH, and broadcasts the magic packet onto the remote relay's physical LAN.
-func SendViaSSHRelay(ctx context.Context, relay RelayConfig, macStr string, opts Options) error {
-	if strings.TrimSpace(relay.Host) == "" {
-		return errors.New("relay host cannot be empty")
+func (r RelayConfig) Validate() error {
+	if strings.TrimSpace(r.Host) == "" || strings.HasPrefix(r.Host, "-") || strings.ContainsAny(r.Host, " \t\r\n/@") {
+		return errors.New("relay host must be a hostname, SSH alias, or IP without a username")
 	}
+	if strings.HasPrefix(r.User, "-") || strings.ContainsAny(r.User, " \t\r\n/@") {
+		return errors.New("invalid relay SSH user")
+	}
+	if r.Port < 0 || r.Port > 65535 {
+		return errors.New("relay SSH port must be between 1 and 65535")
+	}
+	if r.SourceIP != "" && (net.ParseIP(r.SourceIP) == nil || net.ParseIP(r.SourceIP).To4() == nil) {
+		return errors.New("relay source_ip must be the relay's LAN IPv4 address")
+	}
+	return nil
+}
 
+// SendViaSSHRelay sends Python over stdin, keeping configuration out of shell code.
+// A timeout bounds the entire SSH operation, including authentication and remote execution.
+func SendViaSSHRelay(ctx context.Context, relay RelayConfig, macStr string, opts Options) error {
+	if err := relay.Validate(); err != nil {
+		return err
+	}
 	mac, err := NormalizeMAC(macStr)
 	if err != nil {
 		return err
 	}
-
 	packet, err := BuildMagicPacket(mac)
 	if err != nil {
 		return err
 	}
-
 	bcastIP := opts.BroadcastIP
 	if bcastIP == "" {
 		bcastIP = "255.255.255.255"
 	}
+	ip := net.ParseIP(bcastIP)
+	if ip == nil || ip.To4() == nil {
+		return errors.New("relay broadcast must be an IPv4 address on the target LAN")
+	}
 	port := opts.Port
-	if port <= 0 {
+	if port == 0 {
 		port = 9
 	}
-
+	if port < 1 || port > 65535 {
+		return errors.New("WOL port must be between 1 and 65535")
+	}
+	if opts.IfaceName != "" {
+		return errors.New("interface selects a local interface and cannot be used with a relay; use relay.source_ip to select the relay's LAN address")
+	}
+	payload, _ := json.Marshal(struct {
+		Packet    string `json:"packet"`
+		Broadcast string `json:"broadcast"`
+		Port      int    `json:"port"`
+		Source    string `json:"source"`
+	}{base64.StdEncoding.EncodeToString(packet), ip.String(), port, relay.SourceIP})
+	// JSON is loaded as a quoted Python string, never interpreted as executable code.
+	quoted, _ := json.Marshal(string(payload))
+	script := fmt.Sprintf(`import base64, json, socket
+cfg = json.loads(%s)
+packet = base64.b64decode(cfg["packet"])
+with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+    sock.settimeout(5)
+    if cfg["source"]:
+        sock.bind((cfg["source"], 0))
+    sent = sock.sendto(packet, (cfg["broadcast"], cfg["port"]))
+    if sent != len(packet):
+        raise RuntimeError("short write sending magic packet")
+`, quoted)
 	sshPath, err := exec.LookPath("ssh")
 	if err != nil {
 		return fmt.Errorf("ssh executable not found: %w", err)
 	}
-
-	var args []string
-	if relay.Port != 0 && relay.Port != 22 {
+	args := []string{"-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=1"}
+	args = append(args, relay.Args...)
+	if relay.Port != 0 {
 		args = append(args, "-p", strconv.Itoa(relay.Port))
 	}
-	args = append(args, "-o", "BatchMode=yes", "-o", "ConnectTimeout=5")
-
 	destination := relay.Host
 	if relay.User != "" {
-		destination = fmt.Sprintf("%s@%s", relay.User, destination)
+		destination = relay.User + "@" + destination
 	}
-	args = append(args, destination)
-
-	// Command executed on remote relay: sends magic packet via Python, Perl, nc, or bash UDP socket
-	b64Packet := base64.StdEncoding.EncodeToString(packet)
-	remoteScript := fmt.Sprintf(`python3 -c "import socket, base64; s=socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1); s.sendto(base64.b64decode('%s'), ('%s', %d))" 2>/dev/null || perl -MIO::Socket::INET -MMIME::Base64 -e "$s=IO::Socket::INET->new(PeerPort=>%d, Proto=>'udp', Broadcast=>1) or die; $s->send(decode_base64('%s'), 0, sockaddr_in(%d, inet_aton('%s')))" 2>/dev/null || echo -n '%s' | base64 -d | nc -w 1 -u -b %s %d 2>/dev/null`,
-		b64Packet, bcastIP, port,
-		port, b64Packet, port, bcastIP,
-		b64Packet, bcastIP, port,
-	)
-
-	args = append(args, remoteScript)
-
+	args = append(args, "--", destination, "python3 -")
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
 	cmd := exec.CommandContext(ctx, sshPath, args...)
+	cmd.Stdin = strings.NewReader(script)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("SSH relay to %s failed: %s (%w)", destination, strings.TrimSpace(string(out)), err)
+		if ctx.Err() != nil {
+			err = ctx.Err()
+		}
+		return fmt.Errorf("wake relay %s failed (check Tailscale, SSH key/host trust, Python 3, and LAN broadcast): %s: %w", destination, strings.TrimSpace(string(out)), err)
 	}
-
 	return nil
 }
 

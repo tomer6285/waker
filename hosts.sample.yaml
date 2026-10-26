@@ -1,18 +1,25 @@
+# Remote SSH relay example. Replace names, users, MAC, and home LAN addresses.
+# The relay needs Tailscale + SSH key auth + Python 3; no waker-agent.
 version: 1
 settings:
-  auto_tailscale: false # Automatically start Tailscale before scanning on launch, and shut down on quit
+  auto_tailscale: true # Ensure connected before network operations; leave connected on exit.
 defaults:
-  broadcast: 127.0.0.1
+  broadcast: 192.168.1.255 # HOME LAN broadcast, never a Tailscale address.
   wol_port: 9
-  timeout: 30s
-  poll_interval: 5s
-  probe_timeout: 1s
+  timeout: 120s
+  poll_interval: 15s
+  probe_timeout: 2s
+  relay:
+    host: home-pi # Always-on relay's MagicDNS name, Tailscale IP, or SSH alias.
+    user: pi
+    port: 22
+    # args: ["-i", "/absolute/path/to/relay_key"]
+    # source_ip: 192.168.1.2 # Relay's LAN address for multi-NIC hosts.
 hosts:
   - name: desktop
-    mac: AA:BB:CC:DD:EE:FF
-    ip: 127.0.0.1 # IP address or hostname / MagicDNS (e.g. desktop.tailnet.ts.net)
-    broadcast: 127.0.0.1
-    subnet_check: true # optional: set false if host is routed across subnets/VLANs
+    mac: AA:BB:CC:DD:EE:FF # Physical Ethernet MAC of the sleeping target.
+    ip: desktop # TARGET's MagicDNS name or Tailscale IP.
+    subnet_check: false # Permit routed/Tailscale checks (the default).
     ssh:
       user: tomer
       port: 22
@@ -23,28 +30,20 @@ hosts:
       type: ssh
     on_sleep:
       type: ssh
-  - name: valheim
-    mac: 11:22:33:44:55:66
-    ip: 127.0.0.1
-    broadcast: 127.0.0.1
-    checks:
-      - type: tcp
-        port: 2456
-    on_connect:
-      type: custom
-      run: "echo '[Game Client] Launching Valheim steam://connect/127.0.0.1:2456'"
+
   - name: gaming-pc
     mac: DE:AD:BE:EF:00:01
-    ip: 127.0.0.1
-    broadcast: 127.0.0.1
+    ip: gaming-pc
     checks:
       - type: tcp
-        port: 21725
+        port: 9876 # Optional sleep agent's listening port, reached over Tailscale.
     on_connect:
       type: parsec
-      peer_id: "demo-peer-1234"
+      peer_id: "replace-with-your-peer-id"
       settings: "client_vsync=1"
     on_sleep:
-      type: agent
+      type: agent # Agent runs on the TARGET. It only provides sleep, not wake.
       port: 9876
-      token: "secret-token"
+      token_env: WAKER_AGENT_TOKEN # Set the same token on client and target.
+# Local-only use: remove defaults.relay, use target LAN IPs, and leave
+# auto_tailscale false if Tailscale is unnecessary.
