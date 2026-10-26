@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/tomer/waker/pkg/config"
@@ -72,12 +73,18 @@ func CheckHost(ctx context.Context, host *config.HostConfig, timeout time.Durati
 	}
 
 	results := make([]CheckResult, len(checks))
+	var wg sync.WaitGroup
 	for i, c := range checks {
-		ctxTimeout, cancel := context.WithTimeout(ctx, timeout)
-		res := runSingleCheck(ctxTimeout, host, c)
-		cancel()
-		results[i] = res
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			ctxTimeout, cancel := context.WithTimeout(ctx, timeout)
+			defer cancel()
+			// Each check owns its slot, preserving configuration order.
+			results[i] = runSingleCheck(ctxTimeout, host, c)
+		}()
 	}
+	wg.Wait()
 
 	return results
 }

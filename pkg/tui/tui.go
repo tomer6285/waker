@@ -46,6 +46,7 @@ type SleepCompletedMsg struct {
 	Err      error
 }
 type TailscaleStatusMsg *tailscale.Status
+type tailscaleStartupMsg struct{ err error }
 type TailscaleActionCompletedMsg struct {
 	Action string
 	Err    error
@@ -117,13 +118,18 @@ var (
 )
 
 type Model struct {
-	cfg        *config.Config
-	store      *store.Store
-	poller     *presence.Poller
-	sleeper    *sleeper.Sleeper
-	tsMgr      *tailscale.Manager
-	tsStatus   *tailscale.Status
-	configPath string
+	cfg          *config.Config
+	store        *store.Store
+	poller       *presence.Poller
+	sleeper      *sleeper.Sleeper
+	tsMgr        *tailscale.Manager
+	tsStatus     *tailscale.Status
+	configPath   string
+	ctx          context.Context
+	cancel       context.CancelFunc
+	tsStarting   bool
+	tsStartupErr error
+	refreshing   bool
 
 	mode        ViewMode
 	cursor      int
@@ -174,7 +180,12 @@ func NewModelWithTailscale(cfg *config.Config, st *store.Store, poller *presence
 		tsMgr = tailscale.NewManager()
 	}
 
+	ctx, cancel := context.WithCancel(context.Background())
 	m := Model{
+		ctx:         ctx,
+		cancel:      cancel,
+		tsStarting:  cfg.Settings.AutoTailscale,
+		refreshing:  true,
 		cfg:         cfg,
 		store:       st,
 		poller:      poller,
@@ -334,11 +345,33 @@ func (m *Model) updateDynamicPlaceholders() {
 }
 
 func (m Model) Init() tea.Cmd {
+	if m.tsStarting {
+		return tea.Batch(m.spinner.Tick, m.startTailscaleCmd())
+	}
 	return tea.Batch(
 		m.spinner.Tick,
+		m.initialPollCmd(),
 		m.pollTickCmd(),
 		m.checkTailscaleStatusCmd(),
 	)
+}
+
+// Close cancels startup and the initial probe when the program exits.
+func (m Model) Close() { m.cancel() }
+
+func (m Model) startTailscaleCmd() tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(m.ctx, 20*time.Second)
+		defer cancel()
+		_, err := m.tsMgr.OnLaunch(ctx, true)
+		return tailscaleStartupMsg{err: err}
+	}
+}
+
+func (m Model) initialPollCmd() tea.Cmd {
+	return func() tea.Msg {
+		return StatusUpdateMsg(m.poller.PollOnce(m.ctx))
+	}
 }
 
 func (m Model) pollTickCmd() tea.Cmd {
@@ -351,6 +384,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 
 	switch msg := msg.(type) {
+	case tailscaleStartupMsg:
+		m.tsStarting = false
+		m.tsStartupErr = msg.err
+		if msg.err != nil {
+			return m, nil
+		}
+		return m, tea.Batch(m.initialPollCmd(), m.pollTickCmd(), m.checkTailscaleStatusCmd())
+
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
@@ -365,6 +406,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		)
 
 	case StatusUpdateMsg:
+		m.refreshing = false
 		return m, nil
 
 	case LogMsg:
@@ -417,6 +459,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, cmd
 
 	case tea.KeyMsg:
+		if m.tsStarting || m.tsStartupErr != nil {
+			switch msg.String() {
+			case "q", "ctrl+c":
+				m.Close()
+				return m, tea.Quit
+			case "r":
+				if m.tsStartupErr != nil {
+					m.tsStartupErr = nil
+					m.tsStarting = true
+					return m, m.startTailscaleCmd()
+				}
+			}
+			return m, nil
+		}
 		// Handle Sleep confirmation modal
 		if m.confirmSleepHost != "" {
 			switch strings.ToLower(msg.String()) {
@@ -1180,6 +1236,16 @@ func (m Model) View() string {
 	if m.width == 0 {
 		m.width = 80
 	}
+	if m.tsStarting {
+		return titleStyle.Render("WAKER") + "\n\n" + m.spinner.View() +
+			" Waiting for Tailscale to connect...\n\n" +
+			"Checking the connection and starting Tailscale if needed (up to 20s).\n" +
+			"Host checks will start once connected.\n\n[q] Quit\n"
+	}
+	if m.tsStartupErr != nil {
+		return titleStyle.Render("WAKER") + "\n\n" + errorStyle.Render("Tailscale connection failed") +
+			"\n" + m.tsStartupErr.Error() + "\n\n[r] Retry  [q] Quit\n"
+	}
 
 	var sb strings.Builder
 
@@ -1194,6 +1260,9 @@ func (m Model) View() string {
 		}
 	}
 	headerRight = fmt.Sprintf("[%d/%d online] [s settings | ? help | q quit]", onlineCount, len(m.cfg.Hosts))
+	if m.refreshing {
+		headerRight = m.spinner.View() + " Checking hosts (showing saved status)..."
+	}
 	sb.WriteString(lipgloss.JoinHorizontal(lipgloss.Top, title, " ", headerStyle.Render(headerRight)))
 	sb.WriteString("\n\n")
 
@@ -1216,7 +1285,7 @@ func (m Model) View() string {
 	case ModeSettings:
 		return m.viewSettings()
 	default:
-		return m.viewListAndDetail()
+		return sb.String() + m.viewListAndDetail()
 	}
 }
 

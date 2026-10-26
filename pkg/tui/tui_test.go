@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -88,6 +89,7 @@ func setupTestModel(t *testing.T, autoTS bool) (Model, *mockTailscaleClient, str
 	tsMgr := tailscale.NewManagerWithClient(mockTS)
 
 	model := NewModelWithTailscale(cfg, st, poller, cfgPath, tsMgr)
+	t.Cleanup(model.Close)
 	return model, mockTS, cfgPath
 }
 
@@ -190,6 +192,9 @@ func TestSettingsPageNavigationAndToggle(t *testing.T) {
 
 func TestSettingsManualConnectDisconnect(t *testing.T) {
 	m, mockTS, _ := setupTestModel(t, true)
+	// This test exercises manual controls after startup has completed.
+	updated, _ := m.Update(tailscaleStartupMsg{})
+	m = updated.(Model)
 
 	// Enter settings
 	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
@@ -426,5 +431,100 @@ func TestRelayFieldsRemainVisibleInSmallTerminal(t *testing.T) {
 	view = m.viewForm()
 	if !strings.Contains(view, "Save Host") {
 		t.Fatal("save control is offscreen")
+	}
+}
+
+func TestInitialPresenceRefresh(t *testing.T) {
+	m, _, _ := setupTestModel(t, false)
+	// No checks are needed for this test; the initial poll still saves and updates status.
+	m.cfg.Hosts[0].IP = ""
+	if !strings.Contains(m.View(), "showing saved status") {
+		t.Fatal("initial view must identify cached status")
+	}
+	cmds := m.Init()().(tea.BatchMsg)
+	if len(cmds) != 4 {
+		t.Fatalf("expected spinner, initial poll, timer and Tailscale status; got %d commands", len(cmds))
+	}
+	msg, ok := cmds[1]().(StatusUpdateMsg)
+	if !ok || len(msg) != 1 {
+		t.Fatalf("initial poll did not return host status: %#v", msg)
+	}
+	updated, _ := m.Update(msg)
+	m = updated.(Model)
+	if m.refreshing || strings.Contains(m.View(), "showing saved status") {
+		t.Fatal("refresh indicator remained after initial poll")
+	}
+}
+
+func TestTailscaleStartupGatesHostsAndSupportsRetry(t *testing.T) {
+	m, client, _ := setupTestModel(t, true)
+	if !strings.Contains(m.View(), "Waiting for Tailscale") {
+		t.Fatal("missing connection screen")
+	}
+	if cmds := m.Init()().(tea.BatchMsg); len(cmds) != 2 {
+		t.Fatalf("startup should only spin and connect; got %d commands", len(cmds))
+	}
+	for _, key := range []rune{'w', 'c', 's', 'r'} {
+		_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{key}})
+		if cmd != nil {
+			t.Fatalf("key %c started work before connection", key)
+		}
+	}
+	updated, cmd := m.Update(tailscaleStartupMsg{err: errors.New("daemon unavailable")})
+	m = updated.(Model)
+	if cmd != nil || !strings.Contains(m.View(), "daemon unavailable") || !strings.Contains(m.View(), "[r] Retry") {
+		t.Fatal("startup error must remain visible with retry")
+	}
+	updated, cmd = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	m = updated.(Model)
+	if !m.tsStarting || cmd == nil {
+		t.Fatal("retry did not restart connection")
+	}
+	updated, cmd = m.Update(cmd())
+	m = updated.(Model)
+	if client.upCalls != 1 || m.tsStarting || m.tsStartupErr != nil {
+		t.Fatal("retry did not connect")
+	}
+	if !strings.Contains(m.View(), "showing saved status") {
+		t.Fatal("host list should refresh after connection")
+	}
+	if cmds := cmd().(tea.BatchMsg); len(cmds) != 3 {
+		t.Fatal("connection should start polling, timer and status refresh")
+	}
+}
+
+type waitingTailscaleClient struct {
+	mockTailscaleClient
+	started chan struct{}
+}
+
+func (c *waitingTailscaleClient) IsUp(ctx context.Context) (bool, error) {
+	close(c.started)
+	<-ctx.Done()
+	return false, ctx.Err()
+}
+
+func TestQuitCancelsTailscaleStartup(t *testing.T) {
+	m, _, _ := setupTestModel(t, true)
+	client := &waitingTailscaleClient{started: make(chan struct{})}
+	m.tsMgr = tailscale.NewManagerWithClient(client)
+	done := make(chan tea.Msg, 1)
+	go func() { done <- m.startTailscaleCmd()() }()
+	select {
+	case <-client.started:
+	case <-time.After(time.Second):
+		t.Fatal("startup did not begin")
+	}
+	_, quit := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
+	if _, ok := quit().(tea.QuitMsg); !ok {
+		t.Fatal("q did not quit")
+	}
+	select {
+	case msg := <-done:
+		if !errors.Is(msg.(tailscaleStartupMsg).err, context.Canceled) {
+			t.Fatalf("expected canceled startup, got %#v", msg)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("quit did not cancel startup")
 	}
 }

@@ -31,18 +31,21 @@ var rootCmd = &cobra.Command{
 	Short: "Wake-on-LAN manager with TUI & CLI to wake, monitor, and connect to hosts",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		// Default action without subcommands launches TUI
-		cfg, err := loadCommandConfig(cmd)
+		cfg, err := loadOrCreateConfig()
 		if err != nil {
 			return err
 		}
-		st, _ := store.LoadStore("")
+		st, err := store.LoadStore("")
+		if err != nil {
+			return err
+		}
 
-		tsMgr := tailscale.NewManager()
+		tsMgr := newTailscaleManager()
 
 		poller := presence.NewPoller(cfg, st)
-		poller.PollOnce(cmd.Context())
 
 		model := tui.NewModelWithTailscale(cfg, st, poller, cfgFile, tsMgr)
+		defer model.Close()
 		p := tea.NewProgram(model, tea.WithAltScreen())
 		_, err = p.Run()
 		return err
@@ -90,6 +93,7 @@ func loadCommandConfig(cmd *cobra.Command) (*config.Config, error) {
 	}
 	dryRun, _ := cmd.Flags().GetBool("dry-run")
 	if cfg.Settings.AutoTailscale && cmd.Name() != "add" && !dryRun {
+		fmt.Fprintln(cmd.ErrOrStderr(), "Checking and connecting to Tailscale (up to 20s)...")
 		ctx, cancel := context.WithTimeout(cmd.Context(), 20*time.Second)
 		defer cancel()
 		if _, err := newTailscaleManager().OnLaunch(ctx, true); err != nil {

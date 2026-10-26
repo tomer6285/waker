@@ -3,6 +3,9 @@ package health
 import (
 	"context"
 	"net"
+	"os"
+	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -91,5 +94,45 @@ func TestSSHReadinessUsesSSHPort(t *testing.T) {
 	}
 	if ok, _ := IsReachable(CheckReady(context.Background(), h, time.Second)); ok {
 		t.Fatal("SSH readiness should fail while its port is closed")
+	}
+}
+
+// Each ping waits for all three processes to start. Sequential execution would
+// time out the first checks, so success verifies overlap without timing thresholds.
+func TestHostChecksRunConcurrently(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX ping test double")
+	}
+	dir := t.TempDir()
+	script := "#!/bin/sh\nmkdir \"$WAKER_PROBE_BARRIER/$$\"\nwhile :; do\n set -- \"$WAKER_PROBE_BARRIER\"/*\n [ \"$#\" -ge 3 ] && exit 0\n sleep 0.01\ndone\n"
+	if err := os.WriteFile(filepath.Join(dir, "ping"), []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	// Keep barrier entries separate from the executable.
+	barrier := filepath.Join(dir, "barrier")
+	if err := os.Mkdir(barrier, 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("WAKER_PROBE_BARRIER", barrier)
+	host := &config.HostConfig{IP: "127.0.0.1", Checks: []config.CheckConfig{{Type: "ping"}, {Type: "ping"}, {Type: "ping"}, {Type: "unsupported"}}}
+	results := CheckHost(context.Background(), host, 2*time.Second)
+	if len(results) != 4 {
+		t.Fatalf("missing results: %+v", results)
+	}
+	for i := 0; i < 3; i++ {
+		if !results[i].Success {
+			t.Fatalf("checks did not overlap: %+v", results)
+		}
+	}
+	if results[3].Type != "unsupported" || results[3].Success {
+		t.Fatalf("check order or errors lost: %+v", results)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	for _, result := range CheckHost(ctx, host, time.Second) {
+		if result.Success {
+			t.Fatal("canceled check succeeded")
+		}
 	}
 }

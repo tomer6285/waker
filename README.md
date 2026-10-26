@@ -102,7 +102,7 @@ relay:
 
 `interface:` selects a **client-side** interface for local WOL and cannot be combined with a relay. Use `relay.source_ip` instead. The broadcast address always belongs to the target LAN, not the Tailscale network.
 
-`auto_tailscale: true` starts the client's Tailscale connection before the TUI and every network CLI command. Startup errors are reported. **Waker leaves Tailscale connected on exit** so SSH, Parsec, mounts, and games can continue working. Complete Tailscale installation/login beforehand; this setting does not enroll the relay or target. You can manually disconnect from the TUI settings or Tailscale itself.
+`auto_tailscale: true` shows a connection screen while checking and starting the client's Tailscale connection, before host checks and actions become available. Failed connections show the error with retry and quit options. Network CLI commands also report when they are waiting for Tailscale. **Waker leaves Tailscale connected on exit** so SSH, Parsec, mounts, and games can continue working. Complete Tailscale installation/login beforehand; this setting does not enroll the relay or target. You can manually disconnect from the TUI settings or Tailscale itself.
 
 ### Verify the setup
 
@@ -175,7 +175,7 @@ waker --config ./hosts.yaml list
 
 ## TUI
 
-Run `waker`. Use arrows or `j/k` to select a host; `enter` wakes an offline host or connects to an online one, `c` wakes and connects, `w` sends WOL, `z` sleeps, `p` probes, and `r` refreshes. Use `a/e/d` to add/edit/delete, `/` to filter, `l` for logs, `s` for settings, `?` for help, and `q` to quit.
+Run `waker`. The host list opens immediately with saved status while fresh checks run; the header identifies this initial refresh. Use arrows or `j/k` to select a host; `enter` wakes an offline host or connects to an online one, `c` wakes and connects, `w` sends WOL, `z` sleeps, `p` probes, and `r` refreshes. Use `a/e/d` to add/edit/delete, `/` to filter, `l` for logs, `s` for settings, `?` for help, and `q` to quit.
 
 ## Actions and presence
 
