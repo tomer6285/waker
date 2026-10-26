@@ -1,0 +1,34 @@
+name: Release
+on:
+  push:
+    tags: ['v[0-9]*']
+permissions:
+  contents: write
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go test ./...
+      - name: Build standalone binaries
+        shell: bash
+        run: |
+          mkdir -p dist
+          for platform in linux darwin windows; do
+            for arch in amd64 arm64; do
+              for binary in waker waker-agent; do
+                suffix=""
+                if [ "$platform" = windows ]; then suffix=.exe; fi
+                CGO_ENABLED=0 GOOS="$platform" GOARCH="$arch" go build -trimpath -ldflags="-s -w -X github.com/tomer/waker/pkg/distribution.Version=${GITHUB_REF_NAME}" -o "dist/${binary}_${platform}_${arch}${suffix}" "./cmd/${binary}"
+              done
+            done
+          done
+          cd dist
+          sha256sum waker* > checksums.txt
+      - name: Publish binaries and checksums
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/* --verify-tag --generate-notes

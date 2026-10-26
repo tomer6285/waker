@@ -254,6 +254,9 @@ func (m *Model) initFormInputs(host *config.HostConfig) {
 		}
 		if host.OnSleep != nil {
 			m.formInputs[7].SetValue(host.OnSleep.TokenEnv)
+			if host.OnSleep.TokenFile != "" {
+				m.formInputs[7].Placeholder = "managed by setup (leave blank)"
+			}
 		}
 
 		if host.OnConnect != nil {
@@ -1050,7 +1053,7 @@ func (m *Model) parseFormHost() (config.HostConfig, error) {
 		sleep = *h.OnSleep
 	}
 	h.OnSleep = &sleep
-	if sleepType == "agent" && h.OnSleep.Token == "" && h.OnSleep.TokenEnv == "" {
+	if sleepType == "agent" && h.OnSleep.Token == "" && h.OnSleep.TokenEnv == "" && h.OnSleep.TokenFile == "" {
 		h.OnSleep.TokenEnv = "WAKER_AGENT_TOKEN"
 	}
 
@@ -1068,7 +1071,10 @@ func (m *Model) parseFormHost() (config.HostConfig, error) {
 		}
 		h.OnSleep.Port = port
 		h.OnSleep.TokenEnv = strings.TrimSpace(m.formInputs[7].Value())
-		if h.OnSleep.TokenEnv == "" && h.OnSleep.Token == "" {
+		if h.OnSleep.TokenEnv != "" && (m.formOriginal.OnSleep == nil || m.formOriginal.OnSleep.TokenEnv != h.OnSleep.TokenEnv) {
+			h.OnSleep.TokenFile = ""
+		}
+		if h.OnSleep.TokenEnv == "" && h.OnSleep.Token == "" && h.OnSleep.TokenFile == "" {
 			h.OnSleep.TokenEnv = "WAKER_AGENT_TOKEN"
 		}
 	case "custom":
@@ -1699,7 +1705,11 @@ func (m Model) viewForm() string {
 		sb.WriteString("     " + hintStyle.Render("SSH suspend on Linux/macOS; use Agent for Windows") + "\n")
 	case 1: // Agent
 		sb.WriteString(renderField("Agent Port", m.formInputs[6], m.formFocus == 8, "") + "\n")
-		sb.WriteString(renderField("Token env", m.formInputs[7], m.formFocus == 9, "set on client; same token on target") + "\n")
+		tokenHelp := "set on client; same token on target"
+		if m.formOriginal.OnSleep != nil && m.formOriginal.OnSleep.TokenFile != "" {
+			tokenHelp = "credential saved by setup; env override is optional"
+		}
+		sb.WriteString(renderField("Token env", m.formInputs[7], m.formFocus == 9, tokenHelp) + "\n")
 	case 2: // Custom
 		sb.WriteString(renderField("Sleep Command *", m.formInputs[6], m.formFocus == 8, "") + "\n")
 	}

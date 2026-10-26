@@ -161,3 +161,43 @@ func TestSSHSuspendDisconnectRequiresAcknowledgement(t *testing.T) {
 		}
 	}
 }
+
+func TestAgentReadsProtectedCredentialFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "token")
+	if err := os.WriteFile(path, []byte("file-secret\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer file-secret" {
+			t.Error("wrong credential source")
+		}
+	}))
+	defer server.Close()
+	u, _ := url.Parse(server.URL)
+	port, _ := strconv.Atoi(u.Port())
+	h := &config.HostConfig{IP: u.Hostname(), OnSleep: &config.SleepAction{Type: "agent", Port: port, TokenFile: path, Token: "legacy"}}
+	if err := NewSleeper().Sleep(context.Background(), h); err != nil {
+		t.Fatal(err)
+	}
+	_ = os.Remove(path)
+	if err := NewSleeper().Sleep(context.Background(), h); err == nil {
+		t.Fatal("missing file silently fell back to legacy token")
+	}
+}
+
+func TestAgentDoesNotForwardCredentialsOnRedirect(t *testing.T) {
+	forwarded := false
+	other := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { forwarded = true }))
+	defer other.Close()
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { http.Redirect(w, r, other.URL, 302) }))
+	defer target.Close()
+	u, _ := url.Parse(target.URL)
+	port, _ := strconv.Atoi(u.Port())
+	h := &config.HostConfig{IP: u.Hostname(), OnSleep: &config.SleepAction{Type: "agent", Port: port, Token: "secret"}}
+	if err := NewSleeper().Sleep(context.Background(), h); err == nil {
+		t.Fatal("redirect accepted")
+	}
+	if forwarded {
+		t.Fatal("agent credential was forwarded to redirect target")
+	}
+}

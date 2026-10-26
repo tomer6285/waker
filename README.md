@@ -10,13 +10,13 @@ waker sleep desktop --wait
 
 ## Install
 
-Requires Go 1.27+ to build. SSH actions require the system `ssh` client.
+Download a standalone `waker_OS_ARCH` binary from [Releases](https://github.com/tomer6285/waker/releases), make it executable on Linux/macOS, and put it on your `PATH`. Release builds include agent binaries too. Prebuilt downloads require a published version tag; for an unreleased checkout, build locally below. SSH actions require the system `ssh` client.
+
+To build from source, use Go 1.27+:
 
 ```sh
 make build                  # bin/waker and bin/waker-agent
-make install                # installs waker to ~/.local/bin
-# Or:
-go install github.com/tomer/waker/cmd/waker@latest
+make install                # installs both binaries to ~/.local/bin
 ```
 
 Configuration lives at `~/.config/waker/hosts.yaml` (an existing `hosts.yml` is also supported). Override it with `--config PATH`. First launch creates an empty configuration. See [hosts.sample.yaml](hosts.sample.yaml).
@@ -121,34 +121,102 @@ If wake fails, check the relay's SSH/Python error. If it sends successfully but 
 
 ## Optional waker-agent: sleep on the target
 
-**The agent runs on the computer you want to sleep, not on the wake relay.** It handles `POST /sleep` and `GET /health`; it cannot wake a sleeping machine. The relay requires no Waker installation.
+**Install the agent on the computer you want to sleep, not the wake relay.** It cannot wake a sleeping machine. Linux/macOS hosts with working SSH suspend can keep using `on_sleep: { type: ssh }` without an agent.
 
-Use the agent when SSH suspend is unavailable or inconvenient, especially on Windows. For ordinary Linux/macOS SSH sleep, no agent is needed. The service account must have permission to suspend the target.
+Agent setup handles credentials, autostart, and connection checks. You do not need Go on the target, token environment variables, or handwritten service files. Tailscale should already be installed and connected. Setup detects its IPv4 address and binds only to that address; `--bind IP` selects another specific local address. Wildcard binds are rejected by setup.
+
+### Option A: set up the target from your laptop
+
+Add the target to Waker first, including its physical Ethernet MAC and SSH user. Establish SSH host trust and make sure key authentication works:
 
 ```sh
-go install github.com/tomer/waker/cmd/waker-agent@latest
-
-# On the TARGET, set a strong token through your shell/service configuration.
-# Bind explicitly to the target's Tailscale IP:
-waker-agent --bind 100.101.102.103 --port 9876
+waker add desktop --mac AA:BB:CC:DD:EE:FF --ip desktop --ssh-user tomer
+ssh tomer@desktop
+# Exit the SSH session, then:
+waker setup desktop
 ```
 
-Set `WAKER_AGENT_TOKEN` on the target before starting the agent. It refuses to start without a token. It defaults to `127.0.0.1`, so remote use requires `--bind`. Bind to the target's Tailscale address to limit access to the tailnet; `0.0.0.0` exposes every IPv4 interface. Start the agent after Tailscale has assigned its address, and configure it to restart on failure if installed as a service.
+Waker detects the target's OS and architecture, downloads a checksum-verified release binary, transfers it and a generated credential over SSH, and enables autostart. It verifies authenticated access from the client before saving the sleep method. It never sends a sleep request during setup.
 
-On the CLIENT, export the **same token**, then configure the target:
+- **Linux:** requires systemd. Installation runs as root; SSH opens a terminal so sudo can ask for the target user's password.
+- **macOS:** installs a LaunchAgent as the SSH user, who must have an active desktop login. It runs at login and stops at logout. Do not install it with sudo.
+- **Windows:** use local setup below; SSH installation currently requires a POSIX target.
 
-```yaml
-on_sleep:
-  type: agent
-  port: 9876
-  token_env: WAKER_AGENT_TOKEN
+SSH setup uses the host's SSH user, port, extra arguments, SSH config, and agent. It requires existing key authentication (`BatchMode=yes`) and honors normal host-key verification. The target must be awake and reachable. Its configured `ip` must also reach the agent after installation. The wake relay is not involved.
+
+Repeat `waker setup desktop` to repair or upgrade an installation. The client reuses its saved credential. SSH setup from a new client provisions a new credential on the target; to keep an existing credential when adding another client, use a pairing export instead. Useful overrides:
+
+```sh
+waker setup desktop --release v1.0.0       # select a published version
+waker setup desktop --bind 100.101.102.103 --port 9876
+waker setup desktop --agent-binary ./waker-agent_linux_arm64
 ```
 
-The TUI's Agent sleep option includes a token environment-variable field. Existing token settings survive host edits. Static `token:` is supported, but an environment variable avoids storing it in YAML. Never commit tokens.
+`--agent-binary` skips the download and must point to a binary built for the **target**, not the laptop. Downloads require a published release with the binary and `checksums.txt`; see Development for building before the first release.
 
-`GET /health` is an unauthenticated liveness check. `POST /sleep` requires an exact Bearer token. An accepted sleep response means suspension was requested; use `waker sleep desktop --wait` to confirm the target becomes unreachable. Suspend failures are logged on the target. HTTP traffic runs inside the encrypted Tailscale connection when using its address.
+### Option B: install directly on the target, then pair
 
-**Upgrade note:** agents previously started without a token or without an explicit bind address need their startup configuration updated.
+Download the matching `waker-agent_OS_ARCH` binary from [Releases](https://github.com/tomer6285/waker/releases): `linux`, `darwin` (macOS), or `windows`; `amd64` or `arm64`. Windows binaries end in `.exe`. There is no Go installation or build step.
+
+On Linux/macOS, make the downloaded file executable and run it, substituting its actual filename:
+
+```sh
+chmod +x ./waker-agent_linux_amd64
+./waker-agent_linux_amd64 setup
+```
+
+Linux automatically requests sudo. On macOS, run setup from the logged-in user's Terminal **without sudo**. On Windows, run the downloaded binary in **PowerShell as Administrator**:
+
+```powershell
+.\waker-agent_windows_amd64.exe setup
+```
+
+Setup installs a managed copy, generates a strong credential, enables autostart, and verifies the local endpoint. It writes `waker-agent-pair.json` in your current directory. Use `--pair-file PATH` to choose another location, or `--no-pair` when repairing without exporting credentials.
+
+Securely copy that pairing file to your laptop, then pair an existing Waker host:
+
+```sh
+waker setup desktop --pair-file ./waker-agent-pair.json
+```
+
+The client's existing host address is used for verification. The imported port and credential are saved automatically. **The pairing file contains a reusable credential**: transfer it over SSH or another trusted encrypted channel, and delete the transferred copies after pairing. It is not a one-time code. Pair other clients by securely transferring a pairing export to each one.
+
+### Manage the installation
+
+Use the installed binary's full path, or add its directory to `PATH`:
+
+- Linux: `/usr/local/bin/waker-agent`
+- macOS: `~/.local/bin/waker-agent`
+- Windows: `C:\ProgramData\Waker\waker-agent.exe` (or your `ProgramData` directory)
+
+For example, on Linux:
+
+```sh
+/usr/local/bin/waker-agent status
+/usr/local/bin/waker-agent logs
+/usr/local/bin/waker-agent update
+/usr/local/bin/waker-agent uninstall
+```
+
+`update` downloads a checksum-verified release, preserves the configuration, restarts the service, and verifies authentication. `--release v1.0.0` selects a version. On Windows, `update` starts a helper that waits for the current command to exit before replacing the executable; inspect `%ProgramData%\Waker\update.log` for its result. You can also download a new binary outside the installation directory and run its `setup` command. Setup preserves the existing credential when no provisioning file is supplied.
+
+`uninstall` stops the agent and removes autostart. It retains its binary, configuration, and logs so setup can restore the installation. On Linux, commands that need privileges automatically request sudo. On Windows, use an elevated PowerShell session for management.
+
+### Permissions, credentials, and troubleshooting
+
+Linux uses a root systemd service so suspend does not need an interactive password. macOS uses the logged-in user's LaunchAgent and may need an Automation permission approval on the first sleep request. Windows uses a SYSTEM startup task and a retry wrapper, so it works before login. Service restart/retry policies handle Tailscale not being ready at startup. The detected bind address is saved; rerun setup with `--bind IP` if the target's address changes.
+
+Agent configuration is stored at `/etc/waker-agent/config.json`, `~/.local/share/waker-agent/config.json`, or `%ProgramData%\Waker\config.json`. Files containing credentials are owner-only on Unix and have restricted ACLs on Windows. Client setup stores its credential in a separate file in `credentials/` beside `hosts.yaml`; YAML contains only an absolute `on_sleep.token_file` reference. Keep those credential files with that client. Existing `token_env` and static `token` configurations remain supported.
+
+If connection verification fails, run the target's `logs` command and check the bind address, Tailscale access policy, and firewall. Allow the configured agent TCP port (default 9876) from intended clients only. The Windows installer does not change firewall rules automatically. A failed remote setup leaves its credential on the client for retry; the previous host sleep configuration is saved only after successful verification.
+
+`GET /health` is an unauthenticated liveness check. `GET /verify` checks Bearer authentication without suspending. `POST /sleep` requires that credential and requests suspension; an accepted response does not prove the OS suspended. Verify actual sleep when ready:
+
+```sh
+waker sleep desktop --wait
+```
+
+Agent HTTP traffic is encrypted when carried over Tailscale. For advanced manual operation, legacy service migration, and the underlying platform service files, see [Manual agent setup](docs/agent-manual.md). Stop any older manually installed service before using the new installer; it does not migrate legacy service paths or tokens automatically.
 
 ## CLI
 
@@ -166,6 +234,8 @@ waker connect desktop --dry-run       # show action/settings without waking/conn
 waker connect desktop -- -X           # forward options to SSH
 
 waker sleep desktop [--wait]
+waker setup desktop                     # install agent over SSH
+waker setup desktop --pair-file pair.json # pair a locally installed agent
 waker add desktop --mac AA:BB:CC:DD:EE:FF --ip desktop \
   --ssh-user tomer --relay home-pi --relay-user pi --broadcast 192.168.1.255
 waker --config ./hosts.yaml list
@@ -196,3 +266,14 @@ go vet ./...
 ```
 
 The automated relay tests execute the transmitted Python through an SSH test double and verify the actual 102-byte UDP packet. Real hardware WOL and off-site Tailscale connectivity require the setup check above.
+
+### Agent releases
+
+Pushing a version tag such as `v1.0.0` triggers `.github/workflows/release.yml`. It tests the project, cross-builds both binaries for Linux/macOS/Windows on amd64/arm64, and publishes the standalone binaries and `checksums.txt` to GitHub Releases. No release is published by running setup. Downloads use this repository's release assets and check their SHA-256 hashes.
+
+Before a release is published, build a target binary locally and pass it to SSH setup:
+
+```sh
+CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -o bin/waker-agent_linux_arm64 ./cmd/waker-agent
+bin/waker setup desktop --agent-binary bin/waker-agent_linux_arm64
+```

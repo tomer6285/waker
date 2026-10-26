@@ -533,3 +533,25 @@ func TestQuitCancelsTailscaleStartup(t *testing.T) {
 		t.Fatal("quit did not cancel startup")
 	}
 }
+
+func TestFormPreservesSetupCredentialAndAllowsEnvOverride(t *testing.T) {
+	m, _, _ := setupTestModel(t, false)
+	host := m.cfg.Hosts[0]
+	host.OnSleep = &config.SleepAction{Type: "agent", Port: 9876, TokenFile: "/private/managed.token"}
+	m.initFormInputs(&host)
+	edited, err := m.parseFormHost()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if edited.OnSleep.TokenFile != host.OnSleep.TokenFile || edited.OnSleep.TokenEnv != "" {
+		t.Fatal("editing a paired host changed its credentials")
+	}
+	m.formInputs[7].SetValue("MY_AGENT_TOKEN")
+	edited, err = m.parseFormHost()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if edited.OnSleep.TokenFile != "" || edited.OnSleep.TokenEnv != "MY_AGENT_TOKEN" {
+		t.Fatal("explicit env override did not replace managed credential reference")
+	}
+}

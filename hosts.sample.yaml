@@ -44,6 +44,6 @@ hosts:
     on_sleep:
       type: agent # Agent runs on the TARGET. It only provides sleep, not wake.
       port: 9876
-      token_env: WAKER_AGENT_TOKEN # Set the same token on client and target.
+      token_env: WAKER_AGENT_TOKEN # Manual setup only; waker setup manages credentials automatically.
 # Local-only use: remove defaults.relay, use target LAN IPs, and leave
 # auto_tailscale false if Tailscale is unnecessary.

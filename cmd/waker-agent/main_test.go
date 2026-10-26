@@ -53,3 +53,19 @@ func TestEmptyTokenCannotAuthorize(t *testing.T) {
 		t.Fatalf("got %d", w.Code)
 	}
 }
+
+func TestVerifyAuthenticatesWithoutSuspending(t *testing.T) {
+	h := newHandler("secret", func() error { t.Error("verify suspended machine"); return nil })
+	for _, tc := range []struct {
+		method, auth string
+		want         int
+	}{{"GET", "", 401}, {"GET", "Bearer wrong", 401}, {"GET", "Bearer secret", 200}, {"POST", "Bearer secret", 405}} {
+		r := httptest.NewRequest(tc.method, "/verify", nil)
+		r.Header.Set("Authorization", tc.auth)
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		if w.Code != tc.want {
+			t.Fatalf("verify got %d want %d", w.Code, tc.want)
+		}
+	}
+}

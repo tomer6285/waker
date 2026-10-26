@@ -2,15 +2,12 @@ package main
 
 import (
 	"crypto/subtle"
-	"flag"
 	"fmt"
 	"log"
 	"net"
 	"net/http"
-	"os"
 	"os/exec"
 	"runtime"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -39,6 +36,19 @@ func newHandler(expectedToken string, suspend func() error) http.Handler {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"status":"ok"}`))
 	})
+	mux.HandleFunc("/verify", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+		if expectedToken == "" || !ok || subtle.ConstantTimeCompare([]byte(token), []byte(expectedToken)) != 1 {
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"ready"}`))
+	})
 	mux.HandleFunc("/sleep", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			w.Header().Set("Allow", "POST")
@@ -65,26 +75,13 @@ func newHandler(expectedToken string, suspend func() error) http.Handler {
 	return mux
 }
 
-func main() {
-	port := flag.Int("port", 9876, "Port to listen on")
-	bind := flag.String("bind", "127.0.0.1", "Bind IP (use this target's Tailscale IP for remote sleep)")
-	tokenFlag := flag.String("token", "", "Bearer token (prefer WAKER_AGENT_TOKEN)")
-	flag.Parse()
-	expectedToken := *tokenFlag
-	if expectedToken == "" {
-		expectedToken = os.Getenv("WAKER_AGENT_TOKEN")
-	}
-	if expectedToken == "" {
-		log.Fatal("WAKER_AGENT_TOKEN or --token is required")
-	}
-	addr := net.JoinHostPort(*bind, strconv.Itoa(*port))
+func serve(bind string, port int, token string) error {
+	addr := net.JoinHostPort(bind, fmt.Sprint(port))
 	log.Printf("waker-agent sleep endpoint listening on http://%s", addr)
 	server := &http.Server{
-		Addr: addr, Handler: newHandler(expectedToken, suspendSystem),
+		Addr: addr, Handler: newHandler(token, suspendSystem),
 		ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second,
 		WriteTimeout: 10 * time.Second, IdleTimeout: 30 * time.Second,
 	}
-	if err := server.ListenAndServe(); err != nil {
-		log.Fatalf("waker-agent server failed: %v", err)
-	}
+	return server.ListenAndServe()
 }

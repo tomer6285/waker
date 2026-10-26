@@ -18,6 +18,8 @@ go.work.sum
 hosts.yaml
 hosts.yml
 *.local.yaml
+waker-agent-pair*.json
+credentials/
 .env
 .env.*
 *.pem

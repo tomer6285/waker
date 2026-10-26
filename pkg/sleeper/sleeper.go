@@ -23,8 +23,13 @@ type Sleeper struct {
 }
 
 func NewSleeper() *Sleeper {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	// Agent requests must travel directly to the configured target. Environment
+	// proxies and redirects could otherwise forward a credential off the tailnet.
+	transport.Proxy = nil
 	return &Sleeper{
-		HTTPClient: &http.Client{Timeout: 5 * time.Second},
+		HTTPClient: &http.Client{Timeout: 5 * time.Second, Transport: transport,
+			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }},
 	}
 }
 
@@ -56,7 +61,14 @@ func (s *Sleeper) sleepAgent(ctx context.Context, host *config.HostConfig, actio
 
 	token := ""
 	if action != nil {
-		if action.TokenEnv != "" {
+		if action.TokenFile != "" {
+			b, err := os.ReadFile(action.TokenFile)
+			if err != nil {
+				return fmt.Errorf("read agent credential file: %w", err)
+			}
+			token = strings.TrimSpace(string(b))
+		}
+		if token == "" && action.TokenEnv != "" {
 			token = os.Getenv(action.TokenEnv)
 		}
 		if token == "" {
@@ -65,7 +77,7 @@ func (s *Sleeper) sleepAgent(ctx context.Context, host *config.HostConfig, actio
 	}
 
 	if token == "" {
-		return fmt.Errorf("agent sleep requires a token; set on_sleep.token_env and export it on the client")
+		return fmt.Errorf("agent sleep requires a token; run waker setup HOST, or set on_sleep.token_env and export it on the client")
 	}
 	url := "http://" + net.JoinHostPort(host.IP, strconv.Itoa(port)) + "/sleep"
 	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer([]byte(`{}`)))

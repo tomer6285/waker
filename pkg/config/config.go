@@ -33,11 +33,12 @@ type ConnectAction struct {
 }
 
 type SleepAction struct {
-	Type     string `yaml:"type"`                // ssh, agent, custom
-	Port     int    `yaml:"port,omitempty"`      // for agent (default 9876)
-	TokenEnv string `yaml:"token_env,omitempty"` // environment variable storing token
-	Token    string `yaml:"token,omitempty"`     // static token fallback
-	Run      string `yaml:"run,omitempty"`       // for custom sleep command
+	Type      string `yaml:"type"`                 // ssh, agent, custom
+	Port      int    `yaml:"port,omitempty"`       // for agent (default 9876)
+	TokenFile string `yaml:"token_file,omitempty"` // protected credential file created by setup
+	TokenEnv  string `yaml:"token_env,omitempty"`  // environment variable storing token
+	Token     string `yaml:"token,omitempty"`      // static token fallback
+	Run       string `yaml:"run,omitempty"`        // for custom sleep command
 }
 
 type HostConfig struct {
