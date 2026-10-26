@@ -181,7 +181,7 @@ Run `waker`. The host list opens immediately with saved status while fresh check
 
 Connect actions: `ssh`, `parsec` (`peer_id`, optional `settings`), `mount`/`game` (`url`), and `custom` (`run`). Parsec requires its client to be installed and logged in. Mount/game URLs must themselves use an address reachable remotely; Waker does not rewrite them.
 
-Sleep actions: `ssh` (default), `agent`, and `custom` (`run`). SSH sleep uses a POSIX detection script for Linux/macOS; Windows' default OpenSSH shell should use the agent or a custom sleep command. SSH authentication and suspend-command failures are reported. If suspension drops SSH, Waker requires a remote command acknowledgement and an offline probe before treating the disconnect as success. An ambiguous disconnect is reported as an error; check the target status.
+Sleep actions: `ssh` (default), `agent`, and `custom` (`run`). SSH sleep runs a POSIX detection script explicitly through `/bin/sh` on Linux/macOS, including when the remote login shell is fish. Windows' default OpenSSH shell should use the agent or a custom sleep command. SSH authentication and suspend-command failures are reported. If suspension drops SSH, Waker requires a remote command acknowledgement and an offline probe before treating the disconnect as success. An ambiguous disconnect is reported as an error; check the target status.
 
 Checks: `ping`, `tcp` (`port`), `arp`. Any successful presence check marks a host online. Use TCP for remote hosts; ARP is local-only and cached entries can be stale. Sleep and power-off cannot be distinguished by these probes.
 

@@ -229,6 +229,10 @@ func (m *Model) initFormInputs(host *config.HostConfig) {
 	for i := range m.formInputs {
 		ti := textinput.New()
 		ti.Placeholder = placeholders[i]
+		if i == 10 {
+			// An explicit width prevents short placeholders from being truncated.
+			ti.Width = 7 // Prompt plus a five-digit port.
+		}
 		m.formInputs[i] = ti
 	}
 	m.formInputs[0].Focus()
@@ -316,10 +320,13 @@ func (m *Model) initFormInputs(host *config.HostConfig) {
 }
 
 func (m *Model) updateDynamicPlaceholders() {
+	// This input is shared by SSH ports and other connection settings.
+	m.formInputs[5].Width = 0
 	switch m.formConnTypeIdx {
 	case 0: // SSH
 		m.formInputs[4].Placeholder = "tomer (or empty)"
 		m.formInputs[5].Placeholder = "22"
+		m.formInputs[5].Width = 7 // Prompt plus a five-digit port; show the full placeholder.
 	case 1: // Parsec
 		m.formInputs[4].Placeholder = "1a2b3c4d..."
 		m.formInputs[5].Placeholder = "client_vsync=1"

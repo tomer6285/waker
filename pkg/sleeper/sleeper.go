@@ -155,11 +155,14 @@ func (s *Sleeper) sleepSSH(ctx context.Context, host *config.HostConfig) error {
 	if host.SSH != nil && host.SSH.User != "" {
 		target = fmt.Sprintf("%s@%s", host.SSH.User, target)
 	}
-	args = append(args, "--", target, compositeSleepCommand)
+	// The remote login shell may be fish or another non-POSIX shell. Only
+	// ask it to launch sh; send the POSIX script directly to that interpreter.
+	args = append(args, "--", target, "/bin/sh -s")
 
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, sshPath, args...)
+	cmd.Stdin = strings.NewReader(compositeSleepCommand)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		// A verified remote command may lose SSH as the machine suspends. Require

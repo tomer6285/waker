@@ -259,6 +259,11 @@ func TestFormNicknameAndHostname(t *testing.T) {
 	if !strings.Contains(view, "IP / Hostname") {
 		t.Errorf("expected form view to contain 'IP / Hostname', got: %s", view)
 	}
+	for _, idx := range []int{5, 10} {
+		if rendered := m.formInputs[idx].View(); !strings.Contains(rendered, "22") {
+			t.Errorf("expected SSH port field %d to display default 22, got %q", idx, rendered)
+		}
+	}
 
 	// Attempt submitting with empty name -> verify error "Nickname is required"
 	m.formFocus = 13 // Save button

@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -72,6 +73,60 @@ func TestSSHSleepReportsAuthenticationError(t *testing.T) {
 	err := NewSleeper().Sleep(context.Background(), &config.HostConfig{IP: "desktop", OnSleep: &config.SleepAction{Type: "ssh"}})
 	if err == nil || !strings.Contains(err.Error(), "Permission denied") {
 		t.Fatalf("SSH failure swallowed: %v", err)
+	}
+}
+
+func TestSSHSleepRemoteShell(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX test double")
+	}
+	for _, shell := range []string{"sh", "fish"} {
+		t.Run(shell, func(t *testing.T) {
+			shellPath, err := exec.LookPath(shell)
+			if err != nil {
+				t.Skipf("%s unavailable: %v", shell, err)
+			}
+			for _, exitCode := range []string{"0", "1"} {
+				t.Run("suspend_exit_"+exitCode, func(t *testing.T) {
+					dir := t.TempDir()
+					// Emulate sshd passing the remote command to the login shell.
+					sshScript := "#!/bin/sh\nfor remote do :; done\nexec \"$WAKER_TEST_REMOTE_SHELL\" "
+					if shell == "fish" {
+						sshScript += "--no-config "
+					}
+					sshScript += "-c \"$remote\"\n"
+					// Restrict PATH so the real suspend command can never run.
+					for name, script := range map[string]string{
+						"ssh": sshScript,
+						"systemctl": "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$WAKER_TEST_SUSPEND_LOG\"\n" +
+							"echo 'mock suspend result' >&2\nexit \"$WAKER_TEST_SUSPEND_EXIT\"\n",
+					} {
+						if err := os.WriteFile(filepath.Join(dir, name), []byte(script), 0700); err != nil {
+							t.Fatal(err)
+						}
+					}
+					logPath := filepath.Join(dir, "suspend.log")
+					t.Setenv("PATH", dir)
+					t.Setenv("WAKER_TEST_REMOTE_SHELL", shellPath)
+					t.Setenv("WAKER_TEST_SUSPEND_LOG", logPath)
+					t.Setenv("WAKER_TEST_SUSPEND_EXIT", exitCode)
+					err := NewSleeper().Sleep(context.Background(), &config.HostConfig{IP: "desktop"})
+					if exitCode == "0" && err != nil {
+						t.Fatalf("sleep failed: %v", err)
+					}
+					if exitCode != "0" && (err == nil || !strings.Contains(err.Error(), "mock suspend result")) {
+						t.Fatalf("suspend failure not reported: %v", err)
+					}
+					out, err := os.ReadFile(logPath)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if string(out) != "suspend\n" {
+						t.Fatalf("unexpected systemctl arguments: %q", out)
+					}
+				})
+			}
+		})
 	}
 }
 
