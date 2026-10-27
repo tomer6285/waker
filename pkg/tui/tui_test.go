@@ -420,6 +420,73 @@ func TestWakeConnectReportsRelayFailure(t *testing.T) {
 	}
 }
 
+func TestWakeConfirmation(t *testing.T) {
+	for _, action := range []struct {
+		name    string
+		key     tea.KeyMsg
+		connect bool
+		prompt  string
+	}{
+		{"wake", tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'w'}}, false, "wake host 'test-host'"},
+		{"wake and connect", tea.KeyMsg{Type: tea.KeyEnter}, true, "wake and connect to host 'test-host'"},
+	} {
+		t.Run(action.name, func(t *testing.T) {
+			for _, response := range []tea.KeyMsg{
+				{Type: tea.KeyRunes, Runes: []rune{'y'}},
+				{Type: tea.KeyEnter},
+				{Type: tea.KeyRunes, Runes: []rune{'n'}},
+				{Type: tea.KeyEsc},
+				{Type: tea.KeyRunes, Runes: []rune{'q'}},
+			} {
+				t.Run(response.String(), func(t *testing.T) {
+					m, _, _ := setupTestModel(t, false)
+					// Fail delivery locally so confirmed commands cannot send a packet or wait.
+					m.cfg.Hosts[0].IP = "127.0.0.1"
+					m.cfg.Hosts[0].Checks = []config.CheckConfig{{Type: "tcp", Port: 1}}
+					m.cfg.Hosts[0].Relay = &wol.RelayConfig{Host: "-invalid"}
+					updated, cmd := m.Update(action.key)
+					m = updated.(Model)
+					if cmd != nil || m.confirmWakeHost == nil || m.confirmWakeConnect != action.connect {
+						t.Fatal("action must wait for confirmation")
+					}
+					if view := m.View(); !strings.Contains(view, "Are you sure") || !strings.Contains(view, action.prompt) {
+						t.Fatalf("missing confirmation prompt: %s", view)
+					}
+					// Navigation must not change the target while the dialog is open.
+					updated, cmd = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+					m = updated.(Model)
+					if cmd != nil || m.confirmWakeHost == nil || m.cursor != 0 {
+						t.Fatal("confirmation did not block navigation")
+					}
+					updated, cmd = m.Update(response)
+					m = updated.(Model)
+					if m.confirmWakeHost != nil || m.confirmWakeConnect {
+						t.Fatal("confirmation state was not cleared")
+					}
+					confirmed := response.String() == "y" || response.Type == tea.KeyEnter
+					if !confirmed {
+						if cmd != nil {
+							t.Fatal("canceling must not execute an action")
+						}
+						return
+					}
+					if cmd == nil {
+						t.Fatal("confirming must execute an action")
+					}
+					msg := cmd()
+					if action.connect {
+						if log, ok := msg.(LogMsg); !ok || !strings.Contains(string(log), "Wake failed") {
+							t.Fatalf("expected wake-and-connect command, got %v", msg)
+						}
+					} else if result, ok := msg.(WakeCompletedMsg); !ok || result.HostName != "test-host" || result.Err == nil {
+						t.Fatalf("expected wake-only command, got %v", msg)
+					}
+				})
+			}
+		})
+	}
+}
+
 func TestRelayFieldsRemainVisibleInSmallTerminal(t *testing.T) {
 	m, _, _ := setupTestModel(t, false)
 	m.initFormInputs(nil)

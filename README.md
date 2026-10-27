@@ -245,7 +245,7 @@ waker --config ./hosts.yaml list
 
 ## TUI
 
-Run `waker`. The host list opens immediately with saved status while fresh checks run; the header identifies this initial refresh. Use arrows or `j/k` to select a host; `enter` wakes an offline host or connects to an online one, `c` wakes and connects, `w` sends WOL, `z` sleeps, `p` probes, and `r` refreshes. Use `a/e/d` to add/edit/delete, `/` to filter, `l` for logs, `s` for settings, `?` for help, and `q` to quit.
+Run `waker`. The host list opens immediately with saved status while fresh checks run; the header identifies this initial refresh. Use arrows or `j/k` to select a host; `enter` wakes and connects after confirmation, `c` wakes and connects, `w` sends WOL after confirmation, `z` sleeps, `p` probes, and `r` refreshes. Confirm with `y` or `enter`, or cancel with `n` or `esc`. Use `a/e/d` to add/edit/delete, `/` to filter, `l` for logs, `s` for settings, `?` for help, and `q` to quit.
 
 ## Actions and presence
 

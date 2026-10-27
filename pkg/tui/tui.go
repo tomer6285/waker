@@ -156,8 +156,10 @@ type Model struct {
 	formSleepIdx    int // 0: SSH, 1: Agent, 2: Custom
 	formErrorMsg    string
 
-	// Confirmation for sleep
-	confirmSleepHost string
+	// Pending action confirmations
+	confirmSleepHost   string
+	confirmWakeHost    *config.HostConfig
+	confirmWakeConnect bool
 
 	width  int
 	height int
@@ -483,6 +485,26 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
+		// Handle Wake confirmation modal
+		if m.confirmWakeHost != nil {
+			switch strings.ToLower(msg.String()) {
+			case "y", "enter":
+				host := m.confirmWakeHost
+				connect := m.confirmWakeConnect
+				m.confirmWakeHost = nil
+				m.confirmWakeConnect = false
+				if connect {
+					return m, m.wakeAndConnectHostCmd(host)
+				}
+				return m, m.wakeHostCmd(host)
+			case "n", "esc", "q":
+				m.confirmWakeHost = nil
+				m.confirmWakeConnect = false
+				m.addLog("Wake canceled.")
+			}
+			return m, nil
+		}
+
 		// Handle Sleep confirmation modal
 		if m.confirmSleepHost != "" {
 			switch strings.ToLower(msg.String()) {
@@ -586,17 +608,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "w": // Wake
 			host := m.selectedHost()
 			if host != nil {
-				return m, m.wakeHostCmd(host)
+				m.confirmWakeHost = host
+				m.confirmWakeConnect = false
+				return m, nil
 			}
 
-		case "enter": // Wake or Connect if already online
+		case "enter": // Wake and Connect
 			host := m.selectedHost()
 			if host != nil {
-				stat := m.poller.Get(host.Name)
-				if stat != nil && stat.Status == presence.StatusOnline {
-					return m, m.wakeAndConnectHostCmd(host)
-				}
-				return m, m.wakeHostCmd(host)
+				m.confirmWakeHost = host
+				m.confirmWakeConnect = true
+				return m, nil
 			}
 
 		case "c": // Connect
@@ -1279,6 +1301,19 @@ func (m Model) View() string {
 	sb.WriteString(lipgloss.JoinHorizontal(lipgloss.Top, title, " ", headerStyle.Render(headerRight)))
 	sb.WriteString("\n\n")
 
+	if m.confirmWakeHost != nil {
+		action := "wake"
+		if m.confirmWakeConnect {
+			action = "wake and connect to"
+		}
+		modal := panelStyle.Width(m.width - 4).Render(fmt.Sprintf(
+			"Are you sure you want to %s host '%s'?\n\n[y/enter] Yes    [n/esc] Cancel",
+			action, m.confirmWakeHost.Name,
+		))
+		sb.WriteString(modal)
+		return sb.String()
+	}
+
 	if m.confirmSleepHost != "" {
 		modal := panelStyle.Width(m.width - 4).Render(fmt.Sprintf(
 			"Suspend host '%s'?\n\n[y] Yes / Suspend    [n/esc] Cancel",
@@ -1559,9 +1594,9 @@ Navigation:
   r              Refresh presence status immediately
 
 Actions:
-  enter          Wake host (or connect immediately if already online)
+  enter          Wake and connect (asks for confirmation)
   c              Connect (wake → wait for ready → launch action)
-  w              Send Wake-on-LAN magic packet only
+  w              Send Wake-on-LAN magic packet only (asks for confirmation)
   z              Suspend / Sleep host (ssh / agent / custom)
   p              Manual ping / health check probe
   s              Open settings page (Tailscale auto-management, options)
