@@ -163,9 +163,8 @@ func (r *Runner) connectParsec(ctx context.Context, host *config.HostConfig, act
 	}
 
 	cmd := exec.CommandContext(ctx, bin, arg)
-	cmd.Stdout = r.Stdout
-	cmd.Stderr = r.Stderr
-	cmd.Stdin = r.Stdin
+	// Leave stdio nil so Parsec's background logs go to the null device
+	// instead of writing over the TUI after the launcher returns.
 	return cmd.Start()
 }
 
