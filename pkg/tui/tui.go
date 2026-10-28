@@ -1158,6 +1158,9 @@ func (m *Model) sleepHostCmd(hostName string) tea.Cmd {
 			return SleepCompletedMsg{HostName: hostName, Err: err}
 		}
 		err = m.sleeper.Sleep(context.Background(), thost)
+		if err == nil {
+			m.poller.MarkSleeping(hostName)
+		}
 		return SleepCompletedMsg{HostName: hostName, Err: err}
 	}
 }
@@ -1380,6 +1383,11 @@ func (m Model) viewListAndDetail() string {
 				case presence.StatusWaking:
 					dot = m.spinner.View()
 					statusStr = "waking…"
+				case presence.StatusSleeping:
+					sleepSpinner := m.spinner
+					sleepSpinner.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("#81A1C1"))
+					dot = sleepSpinner.View()
+					statusStr = "sleeping…"
 				}
 			}
 

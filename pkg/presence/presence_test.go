@@ -116,3 +116,38 @@ func TestPresencePoller_SubnetUnreachable(t *testing.T) {
 		t.Errorf("expected subnet check in info.Checks, got %+v", info.Checks)
 	}
 }
+
+func TestSleepingTransition(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	host := config.HostConfig{Name: "host", IP: "127.0.0.1", Checks: []config.CheckConfig{{Type: "tcp", Port: listener.Addr().(*net.TCPAddr).Port}}}
+	cfg := &config.Config{Hosts: []config.HostConfig{host}, Defaults: config.DefaultsConfig{Timeout: time.Minute}}
+	st, err := store.LoadStore(filepath.Join(t.TempDir(), "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := NewPoller(cfg, st)
+	p.MarkWaking(host.Name)
+	p.MarkSleeping(host.Name)
+	if got := p.Get(host.Name).Status; got != StatusSleeping {
+		t.Fatalf("after sleep request: got %s", got)
+	}
+	if got := p.PollOnce(context.Background())[host.Name].Status; got != StatusSleeping {
+		t.Fatalf("while still reachable: got %s", got)
+	}
+	p.sleeping[host.Name] = time.Now().Add(-2 * time.Minute)
+	if got := p.ProbeOne(context.Background(), &host).Status; got != StatusOnline {
+		t.Fatalf("after timeout: got %s", got)
+	}
+	p.MarkSleeping(host.Name)
+	listener.Close()
+	if got := p.ProbeOne(context.Background(), &host).Status; got != StatusOffline {
+		t.Fatalf("after going offline: got %s", got)
+	}
+	if _, pending := p.sleeping[host.Name]; pending {
+		t.Fatal("sleep transition was not cleared")
+	}
+}

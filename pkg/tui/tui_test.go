@@ -622,3 +622,28 @@ func TestFormPreservesSetupCredentialAndAllowsEnvOverride(t *testing.T) {
 		t.Fatal("explicit env override did not replace managed credential reference")
 	}
 }
+
+func TestSleepCommandStatus(t *testing.T) {
+	for _, tc := range []struct {
+		command string
+		want    presence.Status
+	}{
+		{"true", presence.StatusSleeping},
+		{"false", presence.StatusUnknown},
+	} {
+		t.Run(tc.command, func(t *testing.T) {
+			m, _, _ := setupTestModel(t, false)
+			m.cfg.Hosts[0].OnSleep = &config.SleepAction{Type: "custom", Run: tc.command}
+			msg := m.sleepHostCmd("test-host")().(SleepCompletedMsg)
+			if (msg.Err == nil) != (tc.want == presence.StatusSleeping) {
+				t.Fatalf("unexpected sleep result: %v", msg.Err)
+			}
+			if got := m.poller.Get("test-host").Status; got != tc.want {
+				t.Fatalf("got %s, want %s", got, tc.want)
+			}
+			if tc.want == presence.StatusSleeping && !strings.Contains(m.viewListAndDetail(), "sleeping…") {
+				t.Fatal("missing sleeping status in host list")
+			}
+		})
+	}
+}

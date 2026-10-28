@@ -17,17 +17,18 @@ const (
 	StatusOffline     Status = "offline"
 	StatusUnreachable Status = "unreachable"
 	StatusWaking      Status = "waking"
+	StatusSleeping    Status = "sleeping"
 	StatusUnknown     Status = "unknown"
 )
 
 type HostStatusInfo struct {
-	Name       string               `json:"name"`
-	Status     Status               `json:"status"`
-	Latency    time.Duration        `json:"latency"`
-	LastSeen   time.Time            `json:"last_seen,omitempty"`
-	LastWake   time.Time            `json:"last_wake,omitempty"`
-	Checks     []health.CheckResult `json:"checks,omitempty"`
-	PolledAt   time.Time            `json:"polled_at"`
+	Name     string               `json:"name"`
+	Status   Status               `json:"status"`
+	Latency  time.Duration        `json:"latency"`
+	LastSeen time.Time            `json:"last_seen,omitempty"`
+	LastWake time.Time            `json:"last_wake,omitempty"`
+	Checks   []health.CheckResult `json:"checks,omitempty"`
+	PolledAt time.Time            `json:"polled_at"`
 }
 
 type Poller struct {
@@ -37,6 +38,7 @@ type Poller struct {
 	mu       sync.RWMutex
 	statuses map[string]*HostStatusInfo
 	waking   map[string]time.Time // host name -> wake time
+	sleeping map[string]time.Time // host name -> sleep time
 
 	listeners []chan map[string]*HostStatusInfo
 }
@@ -47,6 +49,7 @@ func NewPoller(cfg *config.Config, st *store.Store) *Poller {
 		store:    st,
 		statuses: make(map[string]*HostStatusInfo),
 		waking:   make(map[string]time.Time),
+		sleeping: make(map[string]time.Time),
 	}
 	// Pre-populate with store data
 	for _, h := range cfg.Hosts {
@@ -71,12 +74,24 @@ func NewPoller(cfg *config.Config, st *store.Store) *Poller {
 func (p *Poller) MarkWaking(name string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	delete(p.sleeping, name)
 	p.waking[name] = time.Now()
 	if info, ok := p.statuses[name]; ok {
 		info.Status = StatusWaking
 	}
 	p.store.RecordWake(name)
 	_ = p.store.Save()
+}
+
+// MarkSleeping marks a host as sleeping until it goes offline or the timeout expires.
+func (p *Poller) MarkSleeping(name string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	delete(p.waking, name)
+	p.sleeping[name] = time.Now()
+	if info, ok := p.statuses[name]; ok {
+		info.Status = StatusSleeping
+	}
 }
 
 // PollOnce polls all hosts concurrently using a worker pool.
@@ -110,6 +125,9 @@ func (p *Poller) PollOnce(ctx context.Context) map[string]*HostStatusInfo {
 	newMap := make(map[string]*HostStatusInfo)
 	for info := range results {
 		p.statuses[info.Name] = info
+		if info.Status != StatusSleeping {
+			delete(p.sleeping, info.Name)
+		}
 		newMap[info.Name] = info
 
 		// Persist status
@@ -144,6 +162,9 @@ func (p *Poller) ProbeOne(ctx context.Context, host *config.HostConfig) *HostSta
 
 	p.mu.Lock()
 	p.statuses[info.Name] = info
+	if info.Status != StatusSleeping {
+		delete(p.sleeping, info.Name)
+	}
 	p.store.RecordStatus(info.Name, string(info.Status))
 	if info.Status == StatusOnline {
 		p.store.RecordSeen(info.Name, info.Latency)
@@ -158,6 +179,7 @@ func (p *Poller) ProbeOne(ctx context.Context, host *config.HostConfig) *HostSta
 func (p *Poller) probeHost(ctx context.Context, host *config.HostConfig, timeout time.Duration) *HostStatusInfo {
 	p.mu.RLock()
 	wakeTime, isWaking := p.waking[host.Name]
+	sleepTime, isSleeping := p.sleeping[host.Name]
 	p.mu.RUnlock()
 
 	st := p.store.Get(host.Name)
@@ -167,6 +189,15 @@ func (p *Poller) probeHost(ctx context.Context, host *config.HostConfig, timeout
 	status := StatusOffline
 	if reachable {
 		status = StatusOnline
+		if isSleeping {
+			sleepLimit := p.cfg.Defaults.Timeout
+			if sleepLimit <= 0 {
+				sleepLimit = 120 * time.Second
+			}
+			if time.Since(sleepTime) < sleepLimit {
+				status = StatusSleeping
+			}
+		}
 	} else if health.IsSubnetUnreachable(res) {
 		status = StatusUnreachable
 	} else if isWaking {
