@@ -1414,17 +1414,14 @@ func (m Model) viewListAndDetail() string {
 		connInfo := "ssh"
 		if host.OnConnect != nil {
 			connInfo = host.OnConnect.Type
-			if host.OnConnect.PeerID != "" {
-				connInfo += fmt.Sprintf(" (peer: %s)", host.OnConnect.PeerID)
-			}
 		}
 
 		lastSeenStr := "never"
 		if st != nil && !st.LastSeen.IsZero() {
-			lastSeenStr = time.Since(st.LastSeen).Truncate(time.Second).String() + " ago"
+			lastSeenStr = formatLastSeen(time.Since(st.LastSeen))
 		}
 
-		detailLines = append(detailLines, fmt.Sprintf("Detail: %s • MAC: %s • Connect: %s • Last Seen: %s",
+		detailLines = append(detailLines, fmt.Sprintf("Detail: %s • MAC: %s • Connect: %s • Last seen online: %s",
 			host.Name, host.MAC, connInfo, lastSeenStr))
 	} else {
 		detailLines = append(detailLines, "No host selected")
@@ -1450,6 +1447,37 @@ func (m Model) viewListAndDetail() string {
 	sb.WriteString(headerStyle.Render("[Enter] Wake/Connect  [c] Connect  [w] Wake  [z] Sleep  [s] Settings  [a] Add  [e] Edit  [d] Delete  [r] Refresh"))
 
 	return sb.String()
+}
+
+func formatLastSeen(elapsed time.Duration) string {
+	if elapsed < time.Minute {
+		return "just now"
+	}
+
+	var parts []string
+	for _, unit := range []struct {
+		duration time.Duration
+		name     string
+	}{
+		{24 * time.Hour, "day"},
+		{time.Hour, "hour"},
+		{time.Minute, "minute"},
+	} {
+		count := elapsed / unit.duration
+		elapsed %= unit.duration
+		if count == 0 {
+			continue
+		}
+		name := unit.name
+		if count != 1 {
+			name += "s"
+		}
+		parts = append(parts, fmt.Sprintf("%d %s", count, name))
+		if len(parts) == 2 {
+			break
+		}
+	}
+	return strings.Join(parts, " ") + " ago"
 }
 
 func renderToggleSwitch(enabled bool, isFocused bool) string {

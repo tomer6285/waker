@@ -93,6 +93,30 @@ func setupTestModel(t *testing.T, autoTS bool) (Model, *mockTailscaleClient, str
 	return model, mockTS, cfgPath
 }
 
+func TestFormatLastSeen(t *testing.T) {
+	for _, tc := range []struct {
+		elapsed time.Duration
+		want    string
+	}{
+		{-time.Second, "just now"},
+		{0, "just now"},
+		{59 * time.Second, "just now"},
+		{time.Minute, "1 minute ago"},
+		{2*time.Minute + 30*time.Second, "2 minutes ago"},
+		{time.Hour, "1 hour ago"},
+		{time.Hour + time.Minute, "1 hour 1 minute ago"},
+		{24 * time.Hour, "1 day ago"},
+		{61*time.Hour + 51*time.Minute + 21*time.Second, "2 days 13 hours ago"},
+		{48*time.Hour + 5*time.Minute, "2 days 5 minutes ago"},
+	} {
+		t.Run(tc.elapsed.String(), func(t *testing.T) {
+			if got := formatLastSeen(tc.elapsed); got != tc.want {
+				t.Errorf("formatLastSeen(%s) = %q, want %q", tc.elapsed, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestSettingsPageNavigationAndToggle(t *testing.T) {
 	m, _, cfgPath := setupTestModel(t, false)
 
